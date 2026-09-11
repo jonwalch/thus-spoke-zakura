@@ -152,14 +152,19 @@ async fn send(
     }
     state.0.wallet.sync().await?;
     let destination = state.0.store.account(req.to_account)?;
-    let address = if req.destination_pool == "transparent" {
-        destination.transparent_address
-    } else if req.destination_pool == "orchard" {
-        destination.unified_address
-    } else {
-        return Err(ApiError::bad_request(
-            "destination_pool must be transparent or orchard",
-        ));
+    let address = match req.destination_pool.as_str() {
+        "transparent" => destination.transparent_address,
+        "ironwood" => destination.unified_address,
+        "orchard" => {
+            return Err(ApiError::bad_request(
+                "new Orchard outputs are disabled after NU6.3; use ironwood",
+            ));
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "destination_pool must be transparent or ironwood",
+            ));
+        }
     };
     let txid = state
         .0
@@ -205,8 +210,10 @@ async fn faucet(
     if req.amount_zatoshi == 0 {
         return Err(ApiError::bad_request("amount must be greater than zero"));
     }
-    if !matches!(req.pool.as_str(), "transparent" | "orchard") {
-        return Err(ApiError::bad_request("pool must be transparent or orchard"));
+    if !matches!(req.pool.as_str(), "transparent" | "ironwood") {
+        return Err(ApiError::bad_request(
+            "pool must be transparent or ironwood",
+        ));
     }
     Ok(Json(
         fund_from_treasury(
@@ -233,8 +240,8 @@ async fn fund_from_treasury(
     let destination = state.0.store.account(account_id)?;
     let address = match pool {
         "transparent" => destination.transparent_address,
-        "orchard" => destination.unified_address,
-        _ => anyhow::bail!("pool must be transparent or orchard"),
+        "ironwood" => destination.unified_address,
+        _ => anyhow::bail!("pool must be transparent or ironwood"),
     };
     let treasury = state.0.store.account(TREASURY_ACCOUNT_ID)?;
     // The wallet starts scanning at block 2 because lightwalletd reserves height 0
@@ -277,7 +284,7 @@ async fn fund_from_treasury(
         .send(
             &state.0.store.seed()?,
             TREASURY_ACCOUNT_ID,
-            "orchard",
+            "ironwood",
             &address,
             amount_zatoshi,
         )
@@ -297,7 +304,7 @@ async fn fund_from_treasury(
 }
 
 pub async fn provision_initial_balance(state: &AppState) -> anyhow::Result<()> {
-    const INITIAL_FUNDING_KEY: &str = "startup-account-1-orchard-v1";
+    const INITIAL_FUNDING_KEY: &str = "startup-account-1-ironwood-v1";
     if state
         .0
         .store
@@ -310,7 +317,7 @@ pub async fn provision_initial_balance(state: &AppState) -> anyhow::Result<()> {
     fund_from_treasury(
         state,
         1,
-        "orchard",
+        "ironwood",
         5 * ZATOSHIS_PER_ZEC,
         INITIAL_FUNDING_KEY,
     )
@@ -323,9 +330,9 @@ pub async fn provision_initial_balance(state: &AppState) -> anyhow::Result<()> {
         .find(|account| account.id == 1)
         .context("Account 1 disappeared during startup provisioning")?;
     anyhow::ensure!(
-        account.orchard_zatoshi == 5 * ZATOSHIS_PER_ZEC,
-        "Account 1 startup Orchard balance is {}, expected {} zatoshi; reset this existing instance to migrate to the hidden treasury",
-        account.orchard_zatoshi,
+        account.ironwood_zatoshi == 5 * ZATOSHIS_PER_ZEC,
+        "Account 1 startup Ironwood balance is {}, expected {} zatoshi; reset this existing instance to migrate to NU6.3",
+        account.ironwood_zatoshi,
         5 * ZATOSHIS_PER_ZEC
     );
     Ok(())

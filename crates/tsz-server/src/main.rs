@@ -72,6 +72,9 @@ network = "Regtest"
 listen_addr = "0.0.0.0:18233"
 [network.testnet_parameters.activation_heights]
 "NU6" = 1
+"NU6.1" = 2
+"NU6.2" = 3
+"NU6.3" = 4
 
 [rpc]
 listen_addr = "0.0.0.0:18232"
@@ -111,7 +114,7 @@ async fn serve(data_dir: PathBuf) -> Result<()> {
     }
     api::provision_initial_balance(&state)
         .await
-        .context("provisioning Account 1 with 5 Orchard ZEC")?;
+        .context("provisioning Account 1 with 5 Ironwood ZEC")?;
     let app = api::router(state);
     let address: SocketAddr = std::env::var("TSZ_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
@@ -139,5 +142,8 @@ mod tests {
         let config = zakura_config(&treasury);
         assert!(config.contains(&format!("miner_address = \"{treasury}\"")));
         assert!(!config.contains(&format!("miner_address = \"{user}\"")));
+        assert!(config.contains("\"NU6.1\" = 2"));
+        assert!(config.contains("\"NU6.2\" = 3"));
+        assert!(config.contains("\"NU6.3\" = 4"));
     }
 }

@@ -19,7 +19,7 @@ use zcash_client_backend::{
             ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
             decrypt_and_store_transaction,
             input_selection::{GreedyInputSelector, SpendPolicy, TransparentSpendPolicy},
-            propose_shielding_coinbase, propose_standard_transfer_to_address, propose_transfer,
+            propose_shielding_coinbase, propose_transfer,
         },
     },
     fees::{DustOutputPolicy, StandardFeeRule, standard::SingleOutputChangeStrategy},
@@ -138,9 +138,9 @@ pub fn regtest_network() -> LocalNetwork {
         canopy: one,
         nu5: one,
         nu6: one,
-        nu6_1: None,
-        nu6_2: None,
-        nu6_3: None,
+        nu6_1: Some(BlockHeight::from_u32(2)),
+        nu6_2: Some(BlockHeight::from_u32(3)),
+        nu6_3: Some(BlockHeight::from_u32(4)),
     }
 }
 
@@ -216,6 +216,7 @@ impl RealWallet {
             if let Some(balance) = summary.account_balances().get(wallet_id) {
                 account.transparent_zatoshi = u64::from(balance.unshielded_balance().total());
                 account.orchard_zatoshi = u64::from(balance.orchard_balance().total());
+                account.ironwood_zatoshi = u64::from(balance.ironwood_balance().total());
             }
         }
         Ok(())
@@ -265,7 +266,7 @@ impl RealWallet {
             let change = SingleOutputChangeStrategy::<Db>::new(
                 StandardFeeRule::Zip317,
                 None,
-                ShieldedPool::Orchard,
+                ShieldedPool::Ironwood,
                 DustOutputPolicy::default(),
             );
             let policy = SpendPolicy::shielded_pools([])
@@ -283,24 +284,42 @@ impl RealWallet {
                 None,
             )
             .map_err(|e| anyhow::anyhow!("proposing transparent transaction: {e}"))?
-        } else if source_pool == "orchard" {
-            propose_standard_transfer_to_address::<_, _, Infallible>(
+        } else if matches!(source_pool, "orchard" | "ironwood") {
+            let source = if source_pool == "ironwood" {
+                ShieldedPool::Ironwood
+            } else {
+                ShieldedPool::Orchard
+            };
+            let request = TransactionRequest::new(vec![Payment::new(
+                recipient.to_zcash_address(&params),
+                Some(amount),
+                None,
+                None,
+                None,
+                vec![],
+            )?])?;
+            let selector = GreedyInputSelector::<Db>::new();
+            let change = SingleOutputChangeStrategy::<Db>::new(
+                StandardFeeRule::Zip317,
+                None,
+                ShieldedPool::Ironwood,
+                DustOutputPolicy::default(),
+            );
+            propose_transfer::<_, _, _, _, Infallible>(
                 &mut *db,
                 &params,
-                StandardFeeRule::Zip317,
                 account_id,
+                &selector,
+                &change,
+                request,
                 ConfirmationsPolicy::MIN,
-                &recipient,
-                amount,
-                None,
-                None,
-                ShieldedPool::Orchard,
+                &SpendPolicy::shielded_pools([source]),
                 None,
                 None,
             )
-            .map_err(|e| anyhow::anyhow!("proposing Orchard transaction: {e}"))?
+            .map_err(|e| anyhow::anyhow!("proposing {source_pool} transaction: {e}"))?
         } else {
-            bail!("source pool must be transparent or orchard")
+            bail!("source pool must be transparent, orchard, or ironwood")
         };
         let seed = hex::decode(seed_hex)?;
         let usk = UnifiedSpendingKey::from_seed(

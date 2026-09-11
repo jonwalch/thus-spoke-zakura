@@ -90,7 +90,7 @@ The Rust service uses Zakura's wallet, key, primitive, proof, and SQLite crates.
 It scans compact blocks through lightwalletd, reads balances from the scanned
 wallet database, constructs and proves real transactions, and broadcasts them
 through a hidden sixth account used as the mining and faucet treasury. On first
-startup, Account 1 receives exactly 5 ZEC in Orchard from that treasury. Faucet
+startup, Account 1 receives exactly 5 ZEC in Ironwood from that treasury. Faucet
 requests mine mature coinbase funds, shield them through Account 6, and then make the requested transfer. The activity database
 is a UI index only and is never a source of wallet balances.
 
@@ -101,14 +101,16 @@ Zakura and stores its full metadata in the wallet; this compensates for the
 compact transparent-output response not carrying a transaction index. These
 details are internal to the faucet and require no manual setup.
 
-Instances created by older releases keep Account 1 as the miner in their persisted
-Zakura configuration. Run `thus-spoke-zakura reset <name> --force` and start the
-instance again to migrate it to the hidden treasury layout. Resetting permanently
-deletes that instance's local regtest chain and wallet data.
+Instances created by older releases keep their previous miner and network-upgrade
+settings in the persisted Zakura configuration. Run
+`thus-spoke-zakura reset <name> --force` and start the instance again to migrate it
+to the hidden treasury and NU6.3 layout. Resetting permanently deletes that
+instance's local regtest chain and wallet data.
 
-The local chain activates NU6 at height 1 and intentionally remains before
-NU6.1. Activating later upgrades at block 1 would require their consensus
-lockbox disbursements in that activation block.
+The local chain activates NU6, NU6.1, NU6.2, and NU6.3 at heights 1 through 4.
+New shielded payments use the Ironwood pool after NU6.3; the dashboard reports
+legacy Orchard funds separately and allows them to be spent through the
+Orchard-to-Ironwood turnstile.
 
 The launcher talks to Docker directly and labels every resource with its
 instance name. The lightwalletd container currently runs as UID 0 so it can

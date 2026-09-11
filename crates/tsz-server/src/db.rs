@@ -27,6 +27,7 @@ pub struct Account {
     pub transparent_address: String,
     pub transparent_zatoshi: u64,
     pub orchard_zatoshi: u64,
+    pub ironwood_zatoshi: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,6 +72,17 @@ impl Store {
             );
             CREATE TABLE IF NOT EXISTS idempotency (key TEXT PRIMARY KEY, activity_id TEXT NOT NULL);
         "#)?;
+        let has_ironwood: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('accounts') WHERE name='ironwood_zatoshi')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_ironwood {
+            db.execute(
+                "ALTER TABLE accounts ADD COLUMN ironwood_zatoshi INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         let seed = db
             .query_row("SELECT value FROM metadata WHERE key='seed'", [], |r| {
                 r.get::<_, String>(0)
@@ -96,7 +108,7 @@ impl Store {
 
     pub fn accounts(&self) -> Result<Vec<Account>> {
         let db = self.0.lock().unwrap();
-        let mut query = db.prepare("SELECT id,name,unified_address,transparent_address,transparent_zatoshi,orchard_zatoshi FROM accounts ORDER BY id")?;
+        let mut query = db.prepare("SELECT id,name,unified_address,transparent_address,transparent_zatoshi,orchard_zatoshi,ironwood_zatoshi FROM accounts ORDER BY id")?;
         Ok(query
             .query_map([], row_account)?
             .collect::<rusqlite::Result<Vec<_>>>()?)
@@ -111,7 +123,7 @@ impl Store {
     }
 
     pub fn account(&self, id: u8) -> Result<Account> {
-        self.0.lock().unwrap().query_row("SELECT id,name,unified_address,transparent_address,transparent_zatoshi,orchard_zatoshi FROM accounts WHERE id=?1", [id], row_account).with_context(|| format!("account {id} does not exist"))
+        self.0.lock().unwrap().query_row("SELECT id,name,unified_address,transparent_address,transparent_zatoshi,orchard_zatoshi,ironwood_zatoshi FROM accounts WHERE id=?1", [id], row_account).with_context(|| format!("account {id} does not exist"))
     }
 
     pub fn activities(&self, limit: u32) -> Result<Vec<Activity>> {
@@ -212,7 +224,7 @@ impl Store {
             bail!("account {to} does not exist");
         }
         let tx = db.transaction()?;
-        let mut activity = new_activity("faucet", None, to, "orchard", pool, amount);
+        let mut activity = new_activity("faucet", None, to, "ironwood", pool, amount);
         activity.txid = txid.to_owned();
         insert_activity(&tx, &activity, key)?;
         tx.commit()?;
@@ -270,10 +282,10 @@ fn new_activity(
     }
 }
 fn validate_pool(pool: &str) -> Result<()> {
-    if matches!(pool, "transparent" | "orchard") {
+    if matches!(pool, "transparent" | "orchard" | "ironwood") {
         Ok(())
     } else {
-        bail!("pool must be transparent or orchard")
+        bail!("pool must be transparent, orchard, or ironwood")
     }
 }
 fn row_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
@@ -284,6 +296,7 @@ fn row_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         transparent_address: row.get(3)?,
         transparent_zatoshi: row.get(4)?,
         orchard_zatoshi: row.get(5)?,
+        ironwood_zatoshi: row.get(6)?,
     })
 }
 fn row_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<Activity> {
@@ -311,9 +324,9 @@ fn derived_addresses(seed: &[u8], id: u8) -> Result<(String, String)> {
         canopy: one,
         nu5: one,
         nu6: one,
-        nu6_1: None,
-        nu6_2: None,
-        nu6_3: None,
+        nu6_1: Some(BlockHeight::from_u32(2)),
+        nu6_2: Some(BlockHeight::from_u32(3)),
+        nu6_3: Some(BlockHeight::from_u32(4)),
     };
     let account = zip32::AccountId::try_from(u32::from(id - 1))
         .map_err(|_| anyhow::anyhow!("invalid ZIP-32 account {id}"))?;
@@ -354,10 +367,10 @@ mod tests {
                 .starts_with("tm")
         );
         let first = store
-            .faucet(2, "orchard", ZATOSHIS_PER_ZEC, "same", "txid")
+            .faucet(2, "ironwood", ZATOSHIS_PER_ZEC, "same", "txid")
             .unwrap();
         let second = store
-            .faucet(2, "orchard", ZATOSHIS_PER_ZEC, "same", "ignored")
+            .faucet(2, "ironwood", ZATOSHIS_PER_ZEC, "same", "ignored")
             .unwrap();
         assert_eq!(first.id, second.id);
         assert_eq!(store.account(2).unwrap().orchard_zatoshi, 0);

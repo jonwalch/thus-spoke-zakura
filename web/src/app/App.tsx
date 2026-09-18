@@ -20,6 +20,7 @@ export function App() {
   useServerEvents();
   const { pathname } = useLocation();
   const { data: status } = useStatus();
+  const instance = status?.instance;
   const { openFaucet, openMine } = useWalletActions();
   const section = `/${pathname.split('/')[1] ?? ''}`;
   const title = TITLES[section] ?? 'Wallet';
@@ -33,9 +34,14 @@ export function App() {
     <Shell>
       <header className="mb-5 flex items-end justify-between">
         <div>
-          <p className="text-accent mb-1.5 font-mono text-[11px] font-medium tracking-[0.13em]">
-            INSTANCE / {(status?.instance ?? 'default').toUpperCase()}
-          </p>
+          {/* Only worth showing when it disambiguates: the CLI defaults the
+              instance to "default", and "INSTANCE / DEFAULT" is noise above
+              every page for anyone running a single environment. */}
+          {instance && instance !== 'default' && (
+            <p className="text-accent mb-1.5 font-mono text-[11px] font-medium tracking-[0.13em]">
+              INSTANCE / {instance.toUpperCase()}
+            </p>
+          )}
           {!ownsHeading && <h1 className="text-2xl font-semibold tracking-[-0.02em]">{title}</h1>}
         </div>
         <div className="flex gap-2.5">

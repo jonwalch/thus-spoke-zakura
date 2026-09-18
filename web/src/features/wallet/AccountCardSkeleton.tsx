@@ -8,7 +8,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 export function AccountCardSkeleton({ index = 0 }: { index?: number }) {
   return (
     <article
-      className="xp-window animate-rise rounded-xs p-3.5"
+      className="xp-window animate-rise min-w-0 rounded-xs p-3.5"
       style={{ animationDelay: `${index * 45}ms` }}
       aria-hidden
     >

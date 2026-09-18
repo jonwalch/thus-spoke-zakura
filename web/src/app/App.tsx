@@ -32,8 +32,8 @@ export function App() {
 
   return (
     <Shell>
-      <header className="mb-5 flex items-end justify-between">
-        <div>
+      <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
           {/* Only worth showing when it disambiguates: the CLI defaults the
               instance to "default", and "INSTANCE / DEFAULT" is noise above
               every page for anyone running a single environment. */}
@@ -44,7 +44,7 @@ export function App() {
           )}
           {!ownsHeading && <h1 className="text-2xl font-semibold tracking-[-0.02em]">{title}</h1>}
         </div>
-        <div className="flex gap-2.5">
+        <div className="flex flex-wrap items-center justify-end gap-2.5">
           {/* Mining is chain-wide, so it is available everywhere. The faucet
               moves money into a wallet account, so it belongs to the wallet. */}
           <div className="w-28 md:hidden">

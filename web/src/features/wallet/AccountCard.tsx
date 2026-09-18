@@ -11,14 +11,14 @@ export function AccountCard({ account, index = 0 }: { account: Account; index?: 
 
   return (
     <article
-      className="xp-window animate-rise rounded-xs p-5"
+      className="xp-window animate-rise min-w-0 rounded-xs p-4 sm:p-5"
       style={{ animationDelay: `${index * 45}ms` }}
     >
-      <header className="flex items-center gap-2.5">
-        <div className="xp-raised bg-raised text-ink-muted grid size-8 place-items-center rounded-xs font-mono text-[12px] font-bold">
+      <header className="flex min-w-0 items-center gap-2.5">
+        <div className="xp-raised bg-raised text-ink-muted grid size-8 shrink-0 place-items-center rounded-xs font-mono text-[12px] font-bold">
           {account.id}
         </div>
-        <h3 className="flex-1 text-[13px] font-bold">{account.name}</h3>
+        <h3 className="min-w-0 flex-1 truncate text-[13px] font-bold">{account.name}</h3>
         <CopyButton
           value={account.unified_address}
           label={`Copy ${account.name} unified address`}
@@ -56,7 +56,7 @@ export function AccountCard({ account, index = 0 }: { account: Account; index?: 
         {shortHash(account.unified_address, 17, 6)}
       </code>
 
-      <div className="mt-4 flex gap-2">
+      <div className="mt-4 flex min-w-0 flex-wrap gap-2">
         <Button
           variant="subtle"
           size="sm"

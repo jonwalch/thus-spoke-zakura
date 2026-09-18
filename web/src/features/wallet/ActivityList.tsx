@@ -1,6 +1,6 @@
 import { ArrowDownToLine, ArrowRight } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { absoluteTime, timeAgo } from '@/lib/format';
+import { absoluteTime, shortHash, timeAgo } from '@/lib/format';
 import { formatZecAmount } from '@/lib/money';
 import type { Activity } from '@/lib/api';
 import { EmptyState, ErrorState } from '@/components/ui/StateBlock';
@@ -63,9 +63,9 @@ function ActivityRow({ activity, index }: { activity: Activity; index: number })
         <PoolLabel pool={activity.destination_pool} />
       </td>
 
-      <td>
+      <td className="min-w-0">
         <code className="text-ink block truncate font-mono" title={activity.txid}>
-          {activity.txid}
+          {shortHash(activity.txid)}
         </code>
       </td>
 
@@ -97,7 +97,7 @@ export function ActivityList({
   const count = activity.data?.length ?? 0;
 
   return (
-    <Panel title="Recent activity" className="mt-4" meta={<Badge>{count} events</Badge>}>
+    <Panel title="Recent activity" className="min-w-0" meta={<Badge>{count} events</Badge>}>
       {activity.isPending && <SkeletonRows rows={4} />}
       {activity.isError && (
         <ErrorState

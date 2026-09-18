@@ -23,29 +23,29 @@ export function WalletPage() {
   );
 
   return (
-    <>
-      <section className="xp-window border-accent-line from-accent-soft animate-rise relative mb-4 flex items-center justify-between overflow-hidden rounded-xs bg-linear-115 to-white px-6 py-5">
+    <div className="grid min-w-0 gap-4">
+      <section className="xp-window border-accent-line from-accent-soft animate-rise to-panel relative flex min-h-28 items-center overflow-hidden rounded-xs bg-linear-115 px-4 py-5 sm:px-6">
         <PetalFall count={10} />
-        <div className="relative">
+        <div className="relative z-10 min-w-0 pr-16">
           <span className="text-ink-muted block text-[11px] font-medium tracking-[0.08em] uppercase">
             Total balance
           </span>
           {accounts.isSuccess ? (
-            <strong className="text-accent-strong my-1 block text-[32px] leading-none font-semibold tracking-[-0.03em]">
+            <strong className="text-accent-strong my-1 block text-xl leading-none font-semibold tracking-[-0.03em] break-all sm:text-[32px]">
               <ZecAmount zatoshi={total} muteZero={false} />
             </strong>
           ) : (
-            <Skeleton className="my-1.5 h-8 w-44" />
+            <Skeleton className="my-1.5 h-8 w-44 max-w-full" />
           )}
           <small className="text-ink-muted block text-[12px]">
             Across 5 deterministic development accounts
           </small>
         </div>
-        <SakuraMark className="text-petal animate-bloom pointer-events-none absolute -right-4 -bottom-6 size-32 opacity-70" />
+        <SakuraMark className="text-petal animate-bloom pointer-events-none absolute -right-4 -bottom-6 size-24 opacity-70 sm:size-32" />
       </section>
 
-      <div className="mb-3 flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
           <h2 className="text-[14px] font-semibold">Accounts</h2>
           <p className="text-ink-muted mt-0.5 font-mono text-[11px]">
             ZIP-32 derived · Regtest only
@@ -58,7 +58,7 @@ export function WalletPage() {
       </div>
 
       {accounts.isPending && (
-        <section className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+        <section className="grid min-w-0 gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
           {Array.from({ length: 5 }, (_, index) => (
             <AccountCardSkeleton key={index} index={index} />
           ))}
@@ -69,7 +69,7 @@ export function WalletPage() {
         (accounts.data.length === 0 ? (
           <EmptyState message="No development accounts were derived for this environment." />
         ) : (
-          <section className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+          <section className="grid min-w-0 gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
             {accounts.data.map((account, index) => (
               <AccountCard key={account.id} account={account} index={index} />
             ))}
@@ -77,6 +77,6 @@ export function WalletPage() {
         ))}
 
       <ActivityList activity={activity} />
-    </>
+    </div>
   );
 }

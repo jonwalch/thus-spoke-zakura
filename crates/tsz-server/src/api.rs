@@ -4,9 +4,11 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    handler::HandlerWithoutStateExt,
     http::StatusCode,
+    http::Uri,
     response::{
-        IntoResponse, Response,
+        Html, IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
@@ -14,10 +16,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
-use tower_http::{
-    services::{ServeDir, ServeFile},
-    trace::TraceLayer,
-};
+use tower_http::{services::ServeDir, trace::TraceLayer};
 
 use crate::{
     db::{Account, Activity, Store, TREASURY_ACCOUNT_ID, USER_ACCOUNT_COUNT, ZATOSHIS_PER_ZEC},
@@ -50,11 +49,41 @@ impl AppState {
     }
 }
 
+/// Serves the dashboard shell for client-side routes only.
+///
+/// The dashboard is a single-page app, so an unknown path is usually a route
+/// like `/explorer/block/42` and must return the shell with `200`. It is not
+/// a blanket catch-all: an unknown `/api/` path is a genuine 404, and a
+/// missing asset must stay a 404 rather than returning HTML that the browser
+/// would then try to parse as JavaScript or CSS.
+async fn spa_fallback(uri: Uri, index: Arc<Option<String>>) -> Response {
+    let path = uri.path();
+    let looks_like_a_file = path
+        .rsplit('/')
+        .next()
+        .is_some_and(|last| last.contains('.'));
+
+    if path.starts_with("/api/") || looks_like_a_file {
+        return ApiError {
+            status: StatusCode::NOT_FOUND,
+            message: format!("{path} does not exist"),
+        }
+        .into_response();
+    }
+
+    match index.as_ref() {
+        Some(html) => Html(html.clone()).into_response(),
+        None => (StatusCode::NOT_FOUND, "dashboard assets are not installed").into_response(),
+    }
+}
+
 pub fn router(state: AppState) -> Router {
     let static_dir = std::env::var("TSZ_WEB_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("web/dist"));
     let index = static_dir.join("index.html");
+    // Read once: the shell is small and immutable for the life of the process.
+    let index_html = Arc::new(std::fs::read_to_string(&index).ok());
     Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/status", get(status))
@@ -71,7 +100,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/addresses/{address}", get(address))
         .route("/api/v1/search", get(search))
         .route("/api/v1/events", get(events))
-        .fallback_service(ServeDir::new(static_dir).not_found_service(ServeFile::new(index)))
+        // `not_found_service` would wrap the fallback in `SetStatus(404)`,
+        // which renders correctly but reports every deep link as missing.
+        .fallback_service(
+            ServeDir::new(static_dir).fallback(
+                (move |uri: Uri| spa_fallback(uri, Arc::clone(&index_html))).into_service(),
+            ),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

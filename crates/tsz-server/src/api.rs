@@ -485,11 +485,79 @@ async fn blocks(
         json!({"blocks":page,"next_before":start.checked_sub(1)}),
     ))
 }
+fn transparent_prevout_ids(tx: &Value) -> Vec<String> {
+    let Some(vin) = tx.get("vin").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for input in vin {
+        if input.get("coinbase").is_some() {
+            continue;
+        }
+        let Some(txid) = input.get("txid").and_then(Value::as_str) else {
+            continue;
+        };
+        if !ids.iter().any(|id| id == txid) {
+            ids.push(txid.to_owned());
+        }
+    }
+    ids
+}
+
+/// Node `getrawtransaction` does not include the spent output. Copy address
+/// and value from the previous transaction so the explorer can list inputs.
+fn attach_transparent_prevouts(
+    tx: &mut Value,
+    prev_txs: &std::collections::HashMap<String, Value>,
+) {
+    let Some(vin) = tx.get_mut("vin").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for input in vin {
+        if input.get("coinbase").is_some() {
+            continue;
+        }
+        let Some(prev_txid) = input.get("txid").and_then(Value::as_str).map(str::to_owned) else {
+            continue;
+        };
+        let Some(n) = input.get("vout").and_then(Value::as_u64) else {
+            continue;
+        };
+        let Some(prev) = prev_txs.get(&prev_txid) else {
+            continue;
+        };
+        let Some(vout) = prev.get("vout").and_then(Value::as_array) else {
+            continue;
+        };
+        let Some(out) = vout
+            .iter()
+            .find(|out| out.get("n").and_then(Value::as_u64) == Some(n))
+            .or_else(|| vout.get(n as usize))
+        else {
+            continue;
+        };
+        if let Some(value_zat) = out.get("valueZat").cloned() {
+            input["valueZat"] = value_zat;
+        }
+        if let Some(script) = out.get("scriptPubKey").cloned() {
+            input["scriptPubKey"] = script;
+        }
+    }
+}
+
 async fn transaction(
     State(state): State<AppState>,
     Path(txid): Path<String>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(state.0.rpc.transaction(&txid).await?))
+    let mut tx = state.0.rpc.transaction(&txid).await?;
+    let mut prev_txs = std::collections::HashMap::new();
+    for prev_id in transparent_prevout_ids(&tx) {
+        if let Ok(prev) = state.0.rpc.transaction(&prev_id).await {
+            prev_txs.insert(prev_id, prev);
+        }
+    }
+    attach_transparent_prevouts(&mut tx, &prev_txs);
+    Ok(Json(tx))
 }
 async fn mempool(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     Ok(Json(json!({"transactions":state.0.rpc.mempool().await?})))
@@ -693,6 +761,39 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (status, _) = get(&dir, "/wallet").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn copies_spent_output_address_and_value_onto_vin() {
+        let mut tx = json!({
+            "vin": [{"txid": "aa", "vout": 1}],
+            "vout": []
+        });
+        let mut prev = std::collections::HashMap::new();
+        prev.insert(
+            "aa".into(),
+            json!({
+                "vout": [
+                    {"n": 0, "valueZat": 1},
+                    {
+                        "n": 1,
+                        "valueZat": 50_000_000,
+                        "scriptPubKey": {"addresses": ["tmABC"]}
+                    }
+                ]
+            }),
+        );
+        attach_transparent_prevouts(&mut tx, &prev);
+        assert_eq!(tx["vin"][0]["valueZat"], 50_000_000);
+        assert_eq!(tx["vin"][0]["scriptPubKey"]["addresses"][0], "tmABC");
+    }
+
+    #[test]
+    fn leaves_coinbase_inputs_untouched() {
+        let mut tx = json!({"vin": [{"coinbase": "00"}]});
+        attach_transparent_prevouts(&mut tx, &Default::default());
+        assert_eq!(tx["vin"][0]["coinbase"], "00");
+        assert!(tx["vin"][0].get("valueZat").is_none());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import { useQueries, useQuery, type UseQueryResult } from '@tanstack/react-query';
 import {
   api,
   type Account,
@@ -57,6 +57,16 @@ export function useTransaction(txid: string): UseQueryResult<Transaction> {
     queryKey: queryKeys.transaction(txid),
     queryFn: () => api.transaction(txid),
     enabled: txid.length > 0,
+  });
+}
+
+export function useTransactions(txids: string[]): UseQueryResult<Transaction>[] {
+  return useQueries({
+    queries: txids.map((txid) => ({
+      queryKey: queryKeys.transaction(txid),
+      queryFn: () => api.transaction(txid),
+      enabled: txid.length > 0,
+    })),
   });
 }
 

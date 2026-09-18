@@ -101,6 +101,14 @@ export const txInputSchema = z.looseObject({
   coinbase: z.string().optional(),
   txid: z.string().optional(),
   vout: z.number().int().optional(),
+  /** Copied from the spent output when the explorer can resolve the prevout. */
+  valueZat: z.number().int().optional(),
+  scriptPubKey: z
+    .looseObject({
+      addresses: z.array(z.string()).default([]),
+      type: z.string().optional(),
+    })
+    .optional(),
 });
 
 export const txOutputSchema = z.looseObject({

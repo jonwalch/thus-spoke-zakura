@@ -6,11 +6,12 @@ import { Badge } from '@/components/ui/Badge';
 import { DataTable, NumCell, Row, type Column } from '@/components/ui/DataTable';
 import { ErrorState, LoadingState } from '@/components/ui/StateBlock';
 import { SakuraMark } from '@/components/ui/SakuraMark';
-import { useTransaction } from '@/hooks/queries';
-import { errorMessage } from '@/lib/api';
+import { useTransaction, useTransactions } from '@/hooks/queries';
+import { errorMessage, type TxInput } from '@/lib/api';
 import { formatZecAmount } from '@/lib/money';
 import { chainTime, shortHash } from '@/lib/format';
 import { summariseShielding } from './shielding';
+import { resolveTransparentInput } from './resolve-input';
 import { Stat } from '@/components/ui/Stat';
 
 const IO_COLUMNS: Column[] = [
@@ -21,6 +22,51 @@ const IO_COLUMNS: Column[] = [
 
 const BACK_LINK =
   'xp-raised xp-press bg-raised text-ink hover:bg-accent-soft inline-flex cursor-pointer items-center gap-1.5 rounded-xs px-3 py-2 text-[12px] font-medium';
+
+function PublicInputs({ vin }: { vin: TxInput[] }) {
+  const prevIds = [...new Set(vin.flatMap((input) => (input.txid ? [input.txid] : [])))];
+  const prevs = useTransactions(prevIds);
+  const byId = new Map(
+    prevs.flatMap((query) => (query.data ? ([[query.data.txid, query.data]] as const) : [])),
+  );
+
+  return (
+    <Panel
+      eyebrow="PUBLIC INPUTS"
+      title={`${vin.length} transparent input${vin.length === 1 ? '' : 's'}`}
+    >
+      <DataTable columns={IO_COLUMNS}>
+        {vin.map((input, index) => {
+          const resolved = resolveTransparentInput(
+            input,
+            input.txid ? byId.get(input.txid) : undefined,
+          );
+          const label = resolved.coinbase
+            ? 'Coinbase'
+            : (resolved.address ?? (resolved.prevTxid ? shortHash(resolved.prevTxid) : '—'));
+          const to = resolved.address
+            ? `/explorer/address/${resolved.address}`
+            : resolved.prevTxid
+              ? `/explorer/tx/${resolved.prevTxid}`
+              : undefined;
+          return (
+            <Row key={input.txid ?? input.coinbase ?? index} index={index} {...(to ? { to } : {})}>
+              <td className="text-ink-muted tabular-nums">{index}</td>
+              <td>
+                <code className="text-accent-strong truncate font-mono" title={resolved.prevTxid}>
+                  {label}
+                </code>
+              </td>
+              <NumCell className="font-semibold">
+                {resolved.valueZat === undefined ? '—' : formatZecAmount(BigInt(resolved.valueZat))}
+              </NumCell>
+            </Row>
+          );
+        })}
+      </DataTable>
+    </Panel>
+  );
+}
 
 export function TransactionDetail() {
   const { txid = '' } = useParams<{ txid: string }>();
@@ -122,6 +168,8 @@ export function TransactionDetail() {
           </PanelNote>
         )}
       </Panel>
+
+      {tx.vin.length > 0 && <PublicInputs vin={tx.vin} />}
 
       {tx.vout.length > 0 && (
         <Panel

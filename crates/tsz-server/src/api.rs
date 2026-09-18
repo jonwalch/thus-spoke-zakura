@@ -77,13 +77,22 @@ async fn spa_fallback(uri: Uri, index: Arc<Option<String>>) -> Response {
     }
 }
 
+/// Static assets plus the single-page fallback.
+fn dashboard_router(static_dir: PathBuf) -> Router {
+    // Read once: the shell is small and immutable for the life of the process.
+    let index_html = Arc::new(std::fs::read_to_string(static_dir.join("index.html")).ok());
+    Router::new().fallback_service(
+        // `not_found_service` would wrap the fallback in `SetStatus(404)`,
+        // which renders correctly but reports every deep link as missing.
+        ServeDir::new(static_dir)
+            .fallback((move |uri: Uri| spa_fallback(uri, Arc::clone(&index_html))).into_service()),
+    )
+}
+
 pub fn router(state: AppState) -> Router {
     let static_dir = std::env::var("TSZ_WEB_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("web/dist"));
-    let index = static_dir.join("index.html");
-    // Read once: the shell is small and immutable for the life of the process.
-    let index_html = Arc::new(std::fs::read_to_string(&index).ok());
     Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/status", get(status))
@@ -100,13 +109,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/addresses/{address}", get(address))
         .route("/api/v1/search", get(search))
         .route("/api/v1/events", get(events))
-        // `not_found_service` would wrap the fallback in `SetStatus(404)`,
-        // which renders correctly but reports every deep link as missing.
-        .fallback_service(
-            ServeDir::new(static_dir).fallback(
-                (move |uri: Uri| spa_fallback(uri, Arc::clone(&index_html))).into_service(),
-            ),
-        )
+        .fallback_service(dashboard_router(static_dir))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -583,6 +586,93 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// A dashboard directory containing a recognisable shell and one asset.
+    fn dashboard() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<!doctype html><div id=\"root\">",
+        )
+        .expect("write shell");
+        std::fs::create_dir(dir.path().join("assets")).expect("assets dir");
+        std::fs::write(dir.path().join("assets/app.js"), "console.log(1)").expect("write asset");
+        dir
+    }
+
+    async fn get(dir: &tempfile::TempDir, path: &str) -> (StatusCode, String) {
+        let response = dashboard_router(dir.path().to_path_buf())
+            .oneshot(Request::get(path).body(Body::empty()).expect("request"))
+            .await
+            .expect("response");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The dashboard is a single-page app: a path it owns is a route, not a
+    /// missing file. This previously returned 404 for every path but `/`,
+    /// because `not_found_service` wraps the fallback in `SetStatus(404)`.
+    #[tokio::test]
+    async fn client_side_routes_return_the_shell() {
+        let dir = dashboard();
+        for path in [
+            "/",
+            "/wallet",
+            "/explorer",
+            "/explorer/block/1209",
+            "/network",
+        ] {
+            let (status, body) = get(&dir, path).await;
+            assert_eq!(status, StatusCode::OK, "{path} should serve the shell");
+            assert!(
+                body.contains("id=\"root\""),
+                "{path} should return the shell markup"
+            );
+        }
+    }
+
+    /// The fallback is scoped, not a catch-all. A missing asset answered with
+    /// HTML would be parsed by the browser as JavaScript or CSS.
+    #[tokio::test]
+    async fn missing_assets_and_unknown_api_paths_stay_404() {
+        let dir = dashboard();
+        for path in [
+            "/api/v1/nope",
+            "/assets/does-not-exist.js",
+            "/favicon.ico",
+            "/nested/path/styles.css",
+        ] {
+            let (status, body) = get(&dir, path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path} should be a 404");
+            assert!(
+                !body.contains("id=\"root\""),
+                "{path} must not return the shell"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn real_assets_are_still_served() {
+        let dir = dashboard();
+        let (status, body) = get(&dir, "/assets/app.js").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "console.log(1)");
+    }
+
+    /// A misconfigured TSZ_WEB_DIR should fail visibly rather than serving an
+    /// empty 200 that looks like a working dashboard.
+    #[tokio::test]
+    async fn a_missing_shell_is_reported_rather_than_served_empty() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (status, _) = get(&dir, "/wallet").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
 
     #[test]
     fn reserves_the_treasury_account_from_public_operations() {

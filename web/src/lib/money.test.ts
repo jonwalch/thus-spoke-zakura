@@ -11,11 +11,23 @@ describe('parseZec', () => {
     expect(parseZec('0')).toBe(0n);
   });
 
-  it('avoids the float error the previous implementation had', () => {
-    // Math.round(Number('2.675') * 1e8) went through 267499999.99999997
+  it('is exact for values that are not representable as floats', () => {
+    // Number('2.675') * 1e8 is 267499999.99999997 and Number('81.4') * 1e8 is
+    // 8140000000.000001. Rounding happens to recover both, so these pin
+    // exactness rather than proving the parser differs from the old one.
     expect(parseZec('2.675')).toBe(267_500_000n);
     expect(parseZec('81.4')).toBe(8_140_000_000n);
     expect(parseZec('0.07')).toBe(7_000_000n);
+  });
+
+  it('stays exact where rounding a float no longer recovers the value', () => {
+    // Above ~1e8 ZEC the float error exceeds half a zatoshi and
+    // Math.round(Number(x) * 1e8) returns the wrong integer. This is beyond
+    // the 21M supply cap, so it is not reachable with real funds — it is here
+    // because it is the only input that distinguishes an exact parser from
+    // one that is accidentally correct.
+    expect(parseZec('99999999.54960525')).toBe(9_999_999_954_960_525n);
+    expect(Math.round(Number('99999999.54960525') * 1e8)).toBe(9_999_999_954_960_526);
   });
 
   it('stays exact far beyond Number.MAX_SAFE_INTEGER', () => {

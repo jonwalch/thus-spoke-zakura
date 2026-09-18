@@ -16,14 +16,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tower_http::{services::ServeDir, trace::TraceLayer};
+use zcash_protocol::consensus::COINBASE_MATURITY_BLOCKS;
 
 use crate::{
     db::{Account, Activity, Store, TREASURY_ACCOUNT_ID, USER_ACCOUNT_COUNT, ZATOSHIS_PER_ZEC},
     rpc::{ChainInfo, NodeRpc},
-    wallet::RealWallet,
+    wallet::{PaymentError, RealWallet},
 };
-
-const MINIMUM_FEE_ZATOSHI: u64 = 10_000;
 
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -297,29 +296,41 @@ async fn fund_from_treasury(
         "orchard" => destination.unified_address,
         _ => anyhow::bail!("pool must be transparent or orchard"),
     };
-    let treasury = state.0.store.account(TREASURY_ACCOUNT_ID)?;
     state.0.wallet.sync().await?;
-    let mut accounts = state.0.store.accounts()?;
-    state.0.wallet.apply_balances(&mut accounts).await?;
-    let treasury_orchard = accounts
-        .into_iter()
-        .find(|account| account.id == TREASURY_ACCOUNT_ID)
-        .context("treasury account disappeared")?
-        .orchard_zatoshi;
-    if treasury_needs_replenishment(treasury_orchard, amount_zatoshi) {
-        replenish_treasury(state, &treasury).await?;
-    }
-    let txid = state
-        .0
-        .wallet
-        .send(
-            &state.0.store.seed()?,
+    let seed = state.0.store.seed()?;
+    // SDK proposals check spendability and the actual fee before construction. Total
+    // balances include pending change and cannot decide whether this request is fundable.
+    let send = || {
+        state.0.wallet.send(
+            &seed,
             TREASURY_ACCOUNT_ID,
             "orchard",
             &address,
             amount_zatoshi,
         )
-        .await?;
+    };
+    let txid = match send().await {
+        Err(error)
+            if matches!(
+                error.downcast_ref(),
+                Some(PaymentError::InsufficientFunds { .. })
+            ) =>
+        {
+            let treasury = state.0.store.account(TREASURY_ACCOUNT_ID)?;
+            replenish_treasury(state, &treasury).await?;
+            send().await.map_err(|error| {
+                if matches!(
+                    error.downcast_ref(),
+                    Some(PaymentError::InsufficientFunds { .. })
+                ) {
+                    anyhow::Error::new(PaymentError::TreasuryExhausted)
+                } else {
+                    error
+                }
+            })?
+        }
+        result => result?,
+    };
     let pending = state
         .0
         .store
@@ -333,32 +344,56 @@ async fn fund_from_treasury(
     Ok(confirmed)
 }
 
-fn treasury_needs_replenishment(balance: u64, amount: u64) -> bool {
-    balance < amount.saturating_add(MINIMUM_FEE_ZATOSHI)
+#[derive(Deserialize)]
+struct TreasuryOutput {
+    txid: String,
+    height: u32,
+}
+
+async fn mature_treasury_outputs(
+    state: &AppState,
+    treasury: &Account,
+) -> anyhow::Result<Vec<TreasuryOutput>> {
+    let height = state.0.rpc.chain_info().await?.blocks;
+    let mut outputs: Vec<TreasuryOutput> = state
+        .0
+        .rpc
+        .call(
+            "getaddressutxos",
+            json!([{ "addresses": [&treasury.transparent_address] }]),
+        )
+        .await?;
+    // The wallet birthday is block 2; block 1 is deliberately outside its scan.
+    outputs.retain(|output| {
+        output.height >= 2
+            && u64::from(output.height) + u64::from(COINBASE_MATURITY_BLOCKS) <= height
+    });
+    Ok(outputs)
 }
 
 async fn replenish_treasury(state: &AppState, treasury: &Account) -> anyhow::Result<()> {
-    // The wallet starts scanning at block 2 because lightwalletd reserves height 0
-    // as an unspecified BlockId. At height 102, block 2 is the first visible mature reward.
-    let hashes = mine_and_sync(state, 102).await?;
-    let mature_hash = hashes
-        .get(1)
-        .context("Zakura did not return the expected maturity block")?;
-    let mature_block = state.0.rpc.block(mature_hash).await?;
-    let mature_height = mature_block
-        .pointer("/height")
-        .and_then(Value::as_u64)
-        .and_then(|height| u32::try_from(height).ok())
-        .context("Zakura maturity block omitted its height")?;
-    let mature_tx = mature_block
-        .pointer("/tx/0/hex")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("Zakura block omitted coinbase transaction hex"))?;
-    state
-        .0
-        .wallet
-        .enhance_transaction(mature_tx, mature_height)
-        .await?;
+    let mut outputs = mature_treasury_outputs(state, treasury).await?;
+    if outputs.is_empty() {
+        mine_and_sync(state, 102).await?;
+        outputs = mature_treasury_outputs(state, treasury).await?;
+    }
+    // lightwalletd UTXOs omit tx_index, so enhance all mature rewards before
+    // the SDK's coinbase-only selector evaluates them.
+    for output in outputs {
+        let tx = state.0.rpc.transaction(&output.txid).await?;
+        if tx.pointer("/vin/0/coinbase").is_none() {
+            continue;
+        }
+        let raw = tx
+            .get("hex")
+            .and_then(Value::as_str)
+            .context("Zakura omitted coinbase transaction hex")?;
+        state
+            .0
+            .wallet
+            .enhance_transaction(raw, output.height)
+            .await?;
+    }
     state
         .0
         .wallet
@@ -410,6 +445,9 @@ pub async fn provision_initial_balance(state: &AppState) -> anyhow::Result<()> {
         state.0.wallet.sync().await?;
         return Ok(());
     }
+    // A fresh wallet needs scanned blocks before a proposal can determine its target height.
+    let treasury = state.0.store.account(TREASURY_ACCOUNT_ID)?;
+    replenish_treasury(state, &treasury).await?;
     fund_from_treasury(
         state,
         1,
@@ -661,7 +699,10 @@ impl ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
         Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
+            status: match error.downcast_ref() {
+                Some(PaymentError::TreasuryExhausted) => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            },
             message: error.to_string(),
         }
     }
@@ -809,9 +850,10 @@ mod tests {
     }
 
     #[test]
-    fn replenishes_treasury_only_when_amount_and_fee_are_unavailable() {
-        assert!(treasury_needs_replenishment(10_009, 10));
-        assert!(!treasury_needs_replenishment(10_010, 10));
-        assert!(treasury_needs_replenishment(u64::MAX - 1, u64::MAX));
+    fn a_dry_treasury_is_reported_as_unavailable() {
+        assert_eq!(
+            ApiError::from(anyhow::Error::new(PaymentError::TreasuryExhausted)).status,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }

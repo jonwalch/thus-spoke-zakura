@@ -1,29 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import type { Transaction, TxInput } from '@/lib/api';
+import type { TxInput } from '@/lib/api';
 import { resolveTransparentInput } from './resolve-input';
 
-const prev: Transaction = {
-  txid: 'ab'.repeat(32),
-  vin: [],
-  vout: [
-    {
-      n: 0,
+describe('resolveTransparentInput', () => {
+  it('reads the address and value the server copied onto the input', () => {
+    const input: TxInput = {
+      txid: 'ab'.repeat(32),
+      vout: 0,
       valueZat: 100_000_000,
       scriptPubKey: { addresses: ['tmSpentOutput'] },
-    },
-  ],
-  vShieldedSpend: [],
-  vShieldedOutput: [],
-};
-
-describe('resolveTransparentInput', () => {
-  it('takes address and value from the spent output of the previous transaction', () => {
-    const input: TxInput = { txid: prev.txid, vout: 0 };
-    expect(resolveTransparentInput(input, prev)).toEqual({
+    };
+    expect(resolveTransparentInput(input)).toEqual({
       coinbase: false,
-      prevTxid: prev.txid,
+      prevTxid: 'ab'.repeat(32),
       address: 'tmSpentOutput',
       valueZat: 100_000_000,
+    });
+  });
+
+  it('still names the previous transaction when the server could not enrich it', () => {
+    expect(resolveTransparentInput({ txid: 'cd'.repeat(32), vout: 1 })).toEqual({
+      coinbase: false,
+      prevTxid: 'cd'.repeat(32),
     });
   });
 

@@ -39,4 +39,35 @@ describe('summariseShielding', () => {
     expect(summary.mixed).toBe(false);
     expect(summary.transparentOutputs).toBe(2);
   });
+
+  it('does not claim full shielding when the pool value balance is public', () => {
+    // No transparent inputs or outputs, but a non-zero Orchard value balance:
+    // the fee is visible on chain even though sender, recipient and amount are
+    // not. ZIP 224 makes this field part of the transaction.
+    const summary = summariseShielding({
+      txid: 'ab'.repeat(32),
+      vin: [],
+      vout: [],
+      vShieldedSpend: [],
+      vShieldedOutput: [],
+      orchard: { actions: [{}, {}], valueBalanceZat: 10_000 },
+    });
+
+    expect(summary.shieldedOnly).toBe(true);
+    expect(summary.fullyShielded).toBe(false);
+    expect(summary.valueBalanceZat).toBe(10_000);
+  });
+
+  it('claims full shielding only when the balance is zero too', () => {
+    const summary = summariseShielding({
+      txid: 'ab'.repeat(32),
+      vin: [],
+      vout: [],
+      vShieldedSpend: [],
+      vShieldedOutput: [],
+      orchard: { actions: [{}, {}], valueBalanceZat: 0 },
+    });
+
+    expect(summary.fullyShielded).toBe(true);
+  });
 });

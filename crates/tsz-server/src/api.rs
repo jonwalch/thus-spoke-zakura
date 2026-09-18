@@ -392,6 +392,10 @@ async fn mine_and_sync(state: &AppState, blocks: u32) -> anyhow::Result<Vec<Stri
         .wait_for_height(tip_height, Duration::from_secs(120))
         .await?;
     state.0.wallet.sync().await?;
+    // Every caller here produces blocks, so the chain moved for everyone, not
+    // just the tab that asked. Without this, other dashboards keep the old
+    // height and tip until something else happens to mine.
+    notify(state, "chain");
     Ok(hashes)
 }
 

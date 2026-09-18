@@ -1,11 +1,12 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { ArrowRight } from 'lucide-react';
 import { Dialog } from '@/components/ui/Dialog';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { useToast } from '@/components/ui/toast-context';
 import { errorMessage, type Account } from '@/lib/api';
+import { formatZecAmount } from '@/lib/money';
 import { useSend } from '@/hooks/mutations';
 import { sendSchema, type SendInput, type SendValues } from './schemas';
 import { controlStyles } from '@/components/ui/control-styles';
@@ -25,19 +26,37 @@ export function SendDialog({
 }) {
   const toast = useToast();
   const send = useSend();
+  const fromAccountId = defaultAccountId ?? 1;
 
   const form = useForm<SendInput, unknown, SendValues>({
     resolver: zodResolver(sendSchema),
     defaultValues: {
-      from_account: String(defaultAccountId ?? 1),
-      to_account: '2',
+      from_account: String(fromAccountId),
+      to_account: String(accounts.find((account) => account.id !== fromAccountId)?.id ?? 1),
       source_pool: 'orchard',
       destination_pool: 'orchard',
       amount: '1',
     },
   });
 
+  const fromAccount = useWatch({ control: form.control, name: 'from_account' });
+  const sourcePool = useWatch({ control: form.control, name: 'source_pool' });
+  const source = accounts.find((account) => account.id === Number(fromAccount));
+  const available =
+    source === undefined
+      ? 0n
+      : sourcePool === 'orchard'
+        ? source.orchard_zatoshi
+        : source.transparent_zatoshi;
+
   const submit = form.handleSubmit((values) => {
+    if (values.amount > available) {
+      form.setError('amount', {
+        message: `Account ${values.from_account} holds ${formatZecAmount(available)} in the ${values.source_pool} pool.`,
+      });
+      return;
+    }
+
     send.mutate(
       {
         from_account: values.from_account,
@@ -104,7 +123,7 @@ export function SendDialog({
 
         <Field
           label="Amount (ZEC)"
-          hint="Up to 8 decimal places."
+          hint={`${formatZecAmount(available)} available in the ${sourcePool} pool.`}
           error={form.formState.errors.amount?.message}
         >
           {(aria) => (

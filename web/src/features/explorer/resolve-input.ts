@@ -1,4 +1,4 @@
-import type { Transaction, TxInput, TxOutput } from '@/lib/api';
+import type { TxInput } from '@/lib/api';
 
 export interface ResolvedTransparentInput {
   coinbase: boolean;
@@ -7,21 +7,15 @@ export interface ResolvedTransparentInput {
   valueZat?: number;
 }
 
-function spentOutput(input: TxInput, prev?: Transaction): TxOutput | undefined {
-  if (input.vout === undefined || !prev) return undefined;
-  return prev.vout.find((out) => out.n === input.vout) ?? prev.vout[input.vout];
-}
-
-/** Node vin is an outpoint. Address and value live on the spent output. */
-export function resolveTransparentInput(
-  input: TxInput,
-  prev?: Transaction,
-): ResolvedTransparentInput {
+/**
+ * Node vin is a bare outpoint. The server copies the spent output's address and
+ * value onto it before serving the transaction, so this only has to read them.
+ */
+export function resolveTransparentInput(input: TxInput): ResolvedTransparentInput {
   if (input.coinbase) return { coinbase: true };
 
-  const spent = spentOutput(input, prev);
-  const address = input.scriptPubKey?.addresses[0] ?? spent?.scriptPubKey?.addresses[0];
-  const valueZat = input.valueZat ?? spent?.valueZat;
+  const address = input.scriptPubKey?.addresses[0];
+  const valueZat = input.valueZat;
   return {
     coinbase: false,
     ...(input.txid ? { prevTxid: input.txid } : {}),

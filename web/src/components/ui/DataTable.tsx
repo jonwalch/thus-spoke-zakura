@@ -1,4 +1,4 @@
-import type { KeyboardEvent, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/cn';
 
@@ -61,27 +61,15 @@ export function Row({
   return (
     <tr
       style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}
+      // Mouse convenience only. Putting role/tabIndex here would override the
+      // row's implicit `row` role and strip the table relationships; keyboard
+      // and screen reader users navigate via the link inside the first cell,
+      // which every clickable row is required to carry.
       onClick={to ? () => void navigate(to) : undefined}
-      // A row-wide click target must also be reachable from the keyboard.
-      // The cell link remains the primary control; this makes the row itself
-      // focusable and activatable rather than mouse-only.
-      {...(to
-        ? {
-            tabIndex: 0,
-            role: 'link' as const,
-            onKeyDown: (event: KeyboardEvent<HTMLTableRowElement>) => {
-              if (event.key !== 'Enter' && event.key !== ' ') return;
-              if (event.target !== event.currentTarget) return;
-              event.preventDefault();
-              void navigate(to);
-            },
-          }
-        : {})}
       className={cn(
         'border-line hover:bg-accent-soft animate-rise border-b transition-colors last:border-b-0',
         '[&>td]:px-5 [&>td]:py-3.5 [&>td]:align-middle',
-        to &&
-          'focus-visible:outline-accent cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-2',
+        to && 'cursor-pointer',
         className,
       )}
     >

@@ -3,11 +3,13 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { classifyQuery } from './classify-query';
 import { Button } from '@/components/ui/Button';
+import { api } from '@/lib/api';
 
 export function SearchBar() {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
+  const [resolving, setResolving] = useState(false);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -17,7 +19,22 @@ export function SearchBar() {
       return;
     }
     setError('');
-    void navigate(result.path);
+    if ('path' in result) {
+      void navigate(result.path);
+      return;
+    }
+
+    // Block hashes and transaction ids are both 64 hex characters. Only the
+    // node can say which this is, so ask before choosing a route.
+    setResolving(true);
+    void api
+      .search(result.hash)
+      .then(({ type }) => {
+        const prefix = type === 'block' ? 'block' : 'tx';
+        void navigate(`/explorer/${prefix}/${result.hash}`);
+      })
+      .catch(() => setError('No block or transaction on this chain has that hash.'))
+      .finally(() => setResolving(false));
   };
 
   return (
@@ -34,8 +51,8 @@ export function SearchBar() {
             className="text-ink placeholder:text-ink-muted w-full border-0 bg-transparent py-2 text-[13px] outline-none focus:ring-0"
           />
         </div>
-        <Button type="submit" variant="ghost">
-          Search
+        <Button type="submit" variant="ghost" disabled={resolving}>
+          {resolving ? 'Searching…' : 'Search'}
         </Button>
       </div>
       {error && (

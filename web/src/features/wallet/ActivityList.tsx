@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { ArrowDownToLine, ArrowRight } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { absoluteTime, shortHash, timeAgo } from '@/lib/format';
@@ -49,11 +50,16 @@ function ActivityRow({ activity, index }: { activity: Activity; index: number })
           >
             {isFaucet ? <ArrowDownToLine className="size-3" /> : <ArrowRight className="size-3" />}
           </span>
-          <b className="truncate font-semibold">
-            {isFaucet
-              ? `Faucet → Account ${activity.to_account}`
-              : `Account ${activity.from_account ?? '?'} → Account ${activity.to_account}`}
-          </b>
+          <Link
+            to={`/explorer/tx/${activity.txid}`}
+            className="min-w-0 font-semibold hover:underline"
+          >
+            <span className="block truncate">
+              {isFaucet
+                ? `Faucet → Account ${activity.to_account}`
+                : `Account ${activity.from_account ?? '?'} → Account ${activity.to_account}`}
+            </span>
+          </Link>
         </div>
       </td>
 

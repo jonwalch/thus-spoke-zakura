@@ -35,6 +35,13 @@ export const api = {
 
   address: (address: string) => request(`/addresses/${address}`, addressSchema),
 
+  /** Resolves a 64-hex string the client cannot tell apart on shape alone. */
+  search: (query: string) =>
+    request(
+      `/search?q=${encodeURIComponent(query)}`,
+      z.looseObject({ type: z.enum(['block', 'transaction']) }),
+    ),
+
   send: (input: {
     from_account: number;
     to_account: number;

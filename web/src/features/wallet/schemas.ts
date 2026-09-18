@@ -36,13 +36,18 @@ const amountField = z
     return zatoshi;
   });
 
-export const sendSchema = z.object({
-  from_account: accountIdField,
-  to_account: accountIdField,
-  source_pool: poolField,
-  destination_pool: poolField,
-  amount: amountField,
-});
+export const sendSchema = z
+  .object({
+    from_account: accountIdField,
+    to_account: accountIdField,
+    source_pool: poolField,
+    destination_pool: poolField,
+    amount: amountField,
+  })
+  .refine((values) => values.from_account !== values.to_account, {
+    message: 'Pick a different account — sending to yourself only costs the fee.',
+    path: ['to_account'],
+  });
 export type SendInput = z.input<typeof sendSchema>;
 export type SendValues = z.output<typeof sendSchema>;
 

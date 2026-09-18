@@ -108,7 +108,12 @@ export function BlockDetail() {
                   {index === 0 ? 'Coinbase' : `#${index}`}
                 </td>
                 <td>
-                  <code className="text-accent-strong truncate font-mono">{txid}</code>
+                  <Link
+                    to={`/explorer/tx/${txid}`}
+                    className="text-accent-strong font-mono hover:underline"
+                  >
+                    <span className="block truncate">{txid}</span>
+                  </Link>
                 </td>
                 <NumCell
                   className={actions > 0 ? 'text-accent-strong font-semibold' : 'text-ink-muted'}

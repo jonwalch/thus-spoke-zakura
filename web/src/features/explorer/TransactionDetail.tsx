@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/Badge';
 import { DataTable, NumCell, Row, type Column } from '@/components/ui/DataTable';
 import { ErrorState, LoadingState } from '@/components/ui/StateBlock';
 import { SakuraMark } from '@/components/ui/SakuraMark';
-import { useTransaction, useTransactions } from '@/hooks/queries';
+import { useTransaction } from '@/hooks/queries';
 import { errorMessage, type TxInput } from '@/lib/api';
 import { formatZecAmount } from '@/lib/money';
 import { chainTime, shortHash } from '@/lib/format';
@@ -24,12 +24,9 @@ const BACK_LINK =
   'xp-raised xp-press bg-raised text-ink hover:bg-accent-soft inline-flex cursor-pointer items-center gap-1.5 rounded-xs px-3 py-2 text-[12px] font-medium';
 
 function PublicInputs({ vin }: { vin: TxInput[] }) {
-  const prevIds = [...new Set(vin.flatMap((input) => (input.txid ? [input.txid] : [])))];
-  const prevs = useTransactions(prevIds);
-  const byId = new Map(
-    prevs.flatMap((query) => (query.data ? ([[query.data.txid, query.data]] as const) : [])),
-  );
-
+  // The server resolves every prevout before it hands the transaction over, so
+  // refetching each previous transaction here would repeat that work — and each
+  // refetch triggers another round of it server-side.
   return (
     <Panel
       eyebrow="PUBLIC INPUTS"
@@ -37,10 +34,7 @@ function PublicInputs({ vin }: { vin: TxInput[] }) {
     >
       <DataTable columns={IO_COLUMNS}>
         {vin.map((input, index) => {
-          const resolved = resolveTransparentInput(
-            input,
-            input.txid ? byId.get(input.txid) : undefined,
-          );
+          const resolved = resolveTransparentInput(input);
           const label = resolved.coinbase
             ? 'Coinbase'
             : (resolved.address ?? (resolved.prevTxid ? shortHash(resolved.prevTxid) : '—'));
@@ -53,9 +47,15 @@ function PublicInputs({ vin }: { vin: TxInput[] }) {
             <Row key={input.txid ?? input.coinbase ?? index} index={index} {...(to ? { to } : {})}>
               <td className="text-ink-muted tabular-nums">{index}</td>
               <td>
-                <code className="text-accent-strong truncate font-mono" title={resolved.prevTxid}>
-                  {label}
-                </code>
+                {to ? (
+                  <Link to={to} className="text-accent-strong font-mono hover:underline">
+                    <span className="block truncate" title={resolved.prevTxid}>
+                      {label}
+                    </span>
+                  </Link>
+                ) : (
+                  <span className="text-ink block truncate font-mono">{label}</span>
+                )}
               </td>
               <NumCell className="font-semibold">
                 {resolved.valueZat === undefined ? '—' : formatZecAmount(BigInt(resolved.valueZat))}
@@ -146,6 +146,21 @@ export function TransactionDetail() {
           </div>
         )}
 
+        {shielding.shieldedOnly && !shielding.fullyShielded && (
+          <div className="border-accent-line bg-accent-soft flex items-start gap-3 border-b px-5 py-4">
+            <SakuraMark className="text-accent mt-0.5 size-5 shrink-0" />
+            <div>
+              <b className="text-accent-strong block text-[13px]">Only the fee is public</b>
+              <p className="text-ink-muted mt-1 text-[12px] leading-relaxed">
+                Sender, recipient and amount stay inside {shielding.orchardActions} Orchard action
+                {shielding.orchardActions === 1 ? '' : 's'}. The pool value balance of{' '}
+                {formatZecAmount(BigInt(Math.abs(shielding.valueBalanceZat)))} is public chain data,
+                because the network has to see the fee to verify the transaction.
+              </p>
+            </div>
+          </div>
+        )}
+
         {shielding.mixed && (
           <div className="border-warning/30 bg-warning-soft flex items-start gap-3 border-b px-5 py-4">
             <EyeOff className="text-warning mt-0.5 size-5 shrink-0" aria-hidden />
@@ -191,7 +206,16 @@ export function TransactionDetail() {
                 >
                   <td className="text-ink-muted tabular-nums">{out.n}</td>
                   <td>
-                    <code className="text-accent-strong truncate font-mono">{address ?? '—'}</code>
+                    {address ? (
+                      <Link
+                        to={`/explorer/address/${address}`}
+                        className="text-accent-strong font-mono hover:underline"
+                      >
+                        <span className="block truncate">{address}</span>
+                      </Link>
+                    ) : (
+                      <span className="text-ink-muted block truncate font-mono">—</span>
+                    )}
                   </td>
                   <NumCell className="font-semibold">
                     {formatZecAmount(BigInt(out.valueZat))}

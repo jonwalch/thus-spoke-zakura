@@ -119,4 +119,36 @@ describe('SendDialog', () => {
     );
     expect(screen.getByLabelText('From account')).toHaveTextContent('Account 3');
   });
+
+  it('defaults the destination to an account other than the source', () => {
+    renderWithProviders(
+      <SendDialog open onOpenChange={vi.fn()} accounts={testAccounts} defaultAccountId={2} />,
+    );
+
+    // Opening Send from Account 2 used to preselect Account 2 on both sides,
+    // which is a self-send that costs a fee and moves nothing.
+    expect(screen.getByLabelText('From account')).toHaveTextContent('Account 2');
+    expect(screen.getByLabelText('Destination account')).not.toHaveTextContent('Account 2');
+  });
+
+  it('refuses an amount the source account cannot cover', async () => {
+    // Account 2 holds nothing, so any amount is unaffordable.
+    renderWithProviders(
+      <SendDialog open onOpenChange={vi.fn()} accounts={testAccounts} defaultAccountId={2} />,
+    );
+    const field = screen.getByLabelText('Amount (ZEC)');
+    await userEvent.clear(field);
+    await userEvent.type(field, '1');
+    await userEvent.click(screen.getByRole('button', { name: /Send ZEC/i }));
+
+    expect(await screen.findByText(/holds 0 ZEC in the orchard pool/i)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('shows what the selected source can actually spend', () => {
+    renderWithProviders(
+      <SendDialog open onOpenChange={vi.fn()} accounts={testAccounts} defaultAccountId={1} />,
+    );
+    expect(screen.getByText(/5 ZEC available in the orchard pool/i)).toBeInTheDocument();
+  });
 });

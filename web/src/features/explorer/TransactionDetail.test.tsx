@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function renderTx(body: unknown, extras: Record<string, unknown> = {}) {
-  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = requestUrl(input);
     if (url.includes(`/transactions/${TXID}`)) return json(body);
     for (const [id, payload] of Object.entries(extras)) {
@@ -36,13 +36,14 @@ function renderTx(body: unknown, extras: Record<string, unknown> = {}) {
     );
   });
 
-  return renderWithProviders(
+  renderWithProviders(
     <MemoryRouter initialEntries={[`/explorer/tx/${TXID}`]}>
       <Routes>
         <Route path="/explorer/tx/:txid" element={<TransactionDetail />} />
       </Routes>
     </MemoryRouter>,
   );
+  return fetchSpy;
 }
 
 describe('TransactionDetail', () => {
@@ -87,39 +88,35 @@ describe('TransactionDetail', () => {
     expect(screen.getByText('Coinbase')).toBeInTheDocument();
   });
 
-  it('loads address and value from the previous transaction when vin is only an outpoint', async () => {
-    renderTx(
-      {
-        txid: TXID,
-        vin: [{ txid: PREV_TXID, vout: 0 }],
-        vout: [
-          {
-            n: 0,
-            valueZat: 90_000_000,
-            scriptPubKey: { addresses: ['tmBnC1iW276Njs86Lfp7y7qwUit55wG5bDm'] },
-          },
-        ],
-        vShieldedSpend: [],
-        vShieldedOutput: [],
-      },
-      {
-        [PREV_TXID]: {
+  it('renders the address and value the server attached to the input', async () => {
+    const fetchSpy = renderTx({
+      txid: TXID,
+      // The server copies the spent output onto each vin before serving.
+      vin: [
+        {
           txid: PREV_TXID,
-          vin: [],
-          vout: [
-            {
-              n: 0,
-              valueZat: 100_000_000,
-              scriptPubKey: { addresses: [INPUT_ADDRESS] },
-            },
-          ],
-          vShieldedSpend: [],
-          vShieldedOutput: [],
+          vout: 0,
+          valueZat: 100_000_000,
+          scriptPubKey: { addresses: [INPUT_ADDRESS] },
         },
-      },
-    );
+      ],
+      vout: [
+        {
+          n: 0,
+          valueZat: 90_000_000,
+          scriptPubKey: { addresses: ['tmBnC1iW276Njs86Lfp7y7qwUit55wG5bDm'] },
+        },
+      ],
+      vShieldedSpend: [],
+      vShieldedOutput: [],
+    });
 
     expect(await screen.findByText(INPUT_ADDRESS)).toBeInTheDocument();
     expect(screen.getByText('1 ZEC')).toBeInTheDocument();
+
+    // Refetching the previous transaction would repeat the server's own
+    // prevout resolution, and each refetch triggers another round of it.
+    const fetched = fetchSpy.mock.calls.map(([input]) => requestUrl(input as RequestInfo));
+    expect(fetched.filter((url) => url.includes(`/transactions/${PREV_TXID}`))).toEqual([]);
   });
 });

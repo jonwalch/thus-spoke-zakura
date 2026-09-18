@@ -56,7 +56,11 @@ export function AddressDetail() {
       </header>
 
       <section className="grid gap-3 sm:grid-cols-3">
-        <Stat label="Balance" value={formatZecAmount(BigInt(balance))} tone="accent" />
+        <Stat
+          label="Balance"
+          value={formatZecAmount(BigInt(balance))}
+          tone={balance > 0 ? 'accent' : 'muted'}
+        />
         <Stat label="Total received" value={formatZecAmount(BigInt(received))} />
         <Stat label="Total sent" value={formatZecAmount(BigInt(Math.max(spent, 0)))} />
       </section>

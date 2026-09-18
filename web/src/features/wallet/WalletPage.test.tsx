@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, afterEach, beforeAll } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { renderWithProviders, requestUrl } from '@/test/utils';
@@ -69,18 +69,6 @@ function renderWallet() {
   );
 }
 
-beforeAll(() => {
-  Object.defineProperty(window, 'matchMedia', {
-    writable: true,
-    value: (query: string) => ({
-      matches: false,
-      media: query,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    }),
-  });
-});
-
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -99,5 +87,10 @@ describe('WalletPage', () => {
     const tx = await screen.findByTitle(TXID);
     expect(tx).not.toHaveTextContent(TXID);
     expect(tx.textContent?.includes('…')).toBe(true);
+  });
+
+  it('counts a single activity row in the singular', async () => {
+    renderWallet();
+    expect(await screen.findByText('1 event')).toBeInTheDocument();
   });
 });

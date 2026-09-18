@@ -115,7 +115,11 @@ export function TransactionDetail() {
       </header>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Orchard actions" value={String(shielding.orchardActions)} tone="accent" />
+        <Stat
+          label="Orchard actions"
+          value={String(shielding.orchardActions)}
+          tone={shielding.orchardActions > 0 ? 'accent' : 'muted'}
+        />
         <Stat
           label="Block"
           value={tx.height === undefined ? 'Pending' : `#${tx.height.toLocaleString()}`}

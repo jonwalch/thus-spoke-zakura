@@ -97,7 +97,15 @@ export function ActivityList({
   const count = activity.data?.length ?? 0;
 
   return (
-    <Panel title="Recent activity" className="min-w-0" meta={<Badge>{count} events</Badge>}>
+    <Panel
+      title="Recent activity"
+      className="min-w-0"
+      meta={
+        <Badge>
+          {count} event{count === 1 ? '' : 's'}
+        </Badge>
+      }
+    >
       {activity.isPending && <SkeletonRows rows={4} />}
       {activity.isError && (
         <ErrorState

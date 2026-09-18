@@ -22,7 +22,7 @@ export function ZecAmount({
   return (
     <AnimatedValue value={zatoshi.toString()}>
       <span
-        className={cn('tabular-nums', muteZero && zatoshi === 0n && 'text-ink-muted', className)}
+        className={cn('tabular-nums', className, muteZero && zatoshi === 0n && 'text-ink-muted')}
       >
         {formatZecAmount(displayed)}
       </span>

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeAll } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { renderWithProviders } from '@/test/utils';
+import { renderWithProviders, requestUrl } from '@/test/utils';
 import { WalletActionsProvider } from './WalletActions';
 import { WalletPage } from './WalletPage';
 
@@ -18,7 +18,7 @@ function json(body: unknown): Promise<Response> {
 
 function mockWalletApis() {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
-    const url = String(input);
+    const url = requestUrl(input);
     if (url.includes('/accounts')) {
       return json([
         {

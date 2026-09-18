@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { renderWithProviders } from '@/test/utils';
+import { renderWithProviders, requestUrl } from '@/test/utils';
 import { TransactionDetail } from './TransactionDetail';
 
 const TXID = 'd9'.repeat(32);
@@ -23,7 +23,7 @@ afterEach(() => {
 
 function renderTx(body: unknown, extras: Record<string, unknown> = {}) {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
-    const url = String(input);
+    const url = requestUrl(input);
     if (url.includes(`/transactions/${TXID}`)) return json(body);
     for (const [id, payload] of Object.entries(extras)) {
       if (url.includes(`/transactions/${id}`)) return json(payload);

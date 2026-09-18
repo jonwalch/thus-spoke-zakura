@@ -4,6 +4,12 @@ import type { ReactElement, ReactNode } from 'react';
 import { ToastProvider } from '@/components/ui/Toast';
 import type { Account } from '@/lib/api';
 
+export function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
 export function renderWithProviders(ui: ReactElement): RenderResult {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },

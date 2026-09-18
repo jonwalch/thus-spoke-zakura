@@ -51,7 +51,7 @@ export function WalletPage() {
             ZIP-32 derived · Regtest only
           </p>
         </div>
-        <Button variant="ghost" size="sm" onClick={openSend}>
+        <Button variant="ghost" size="sm" onClick={() => openSend()}>
           <Send />
           Send ZEC
         </Button>

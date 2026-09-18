@@ -181,7 +181,7 @@ export function TransactionDetail() {
           <DataRow label="Sapling">{shielding.saplingSpends + shielding.saplingOutputs}</DataRow>
         </dl>
 
-        {!shielding.fullyShielded && !shielding.mixed && (
+        {!shielding.shieldedOnly && !shielding.mixed && (
           <PanelNote>
             Fully transparent. Every input, output, address and amount is public chain data.
           </PanelNote>

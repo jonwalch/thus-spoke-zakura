@@ -119,4 +119,21 @@ describe('TransactionDetail', () => {
     const fetched = fetchSpy.mock.calls.map(([input]) => requestUrl(input as RequestInfo));
     expect(fetched.filter((url) => url.includes(`/transactions/${PREV_TXID}`))).toEqual([]);
   });
+
+  it('does not call a shielded transfer fully transparent when it pays a fee', async () => {
+    // Splitting "shielded" into zero-balance and fee-paying cases left this
+    // footer keyed off the wrong flag, so a fee-paying Orchard transfer was
+    // labelled fully transparent.
+    renderTx({
+      txid: TXID,
+      vin: [],
+      vout: [],
+      vShieldedSpend: [],
+      vShieldedOutput: [],
+      orchard: { actions: [{}, {}], valueBalanceZat: 10_000 },
+    });
+
+    expect(await screen.findByText('Only the fee is public')).toBeInTheDocument();
+    expect(screen.queryByText(/Fully transparent/i)).not.toBeInTheDocument();
+  });
 });

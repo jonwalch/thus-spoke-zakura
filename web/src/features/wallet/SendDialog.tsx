@@ -1,0 +1,126 @@
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useForm } from 'react-hook-form';
+import { ArrowRight } from 'lucide-react';
+import { Dialog } from '@/components/ui/Dialog';
+import { Button } from '@/components/ui/Button';
+import { Field } from '@/components/ui/Field';
+import { useToast } from '@/components/ui/toast-context';
+import { errorMessage, type Account } from '@/lib/api';
+import { useSend } from '@/hooks/mutations';
+import { sendSchema, type SendInput, type SendValues } from './schemas';
+import { controlStyles } from '@/components/ui/control-styles';
+import { SelectField } from './fields';
+import { POOL_OPTIONS, accountOptions } from './field-options';
+
+export function SendDialog({
+  open,
+  onOpenChange,
+  accounts,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  accounts: Account[];
+}) {
+  const toast = useToast();
+  const send = useSend();
+
+  const form = useForm<SendInput, unknown, SendValues>({
+    resolver: zodResolver(sendSchema),
+    defaultValues: {
+      from_account: '1',
+      to_account: '2',
+      source_pool: 'orchard',
+      destination_pool: 'orchard',
+      amount: '1',
+    },
+  });
+
+  const submit = form.handleSubmit((values) => {
+    send.mutate(
+      {
+        from_account: values.from_account,
+        to_account: values.to_account,
+        source_pool: values.source_pool,
+        destination_pool: values.destination_pool,
+        amount_zatoshi: values.amount,
+      },
+      {
+        onSuccess: (activity) => {
+          toast.success(
+            `Sent to Account ${activity.to_account}`,
+            'The transaction was mined into a new block.',
+          );
+          onOpenChange(false);
+          form.reset();
+        },
+        onError: (error) => toast.error('Transfer failed', errorMessage(error)),
+      },
+    );
+  });
+
+  const options = accountOptions(accounts);
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      eyebrow="NEW TRANSACTION"
+      title="Send ZEC"
+      description="Moves existing funds between development accounts. One block is mined to confirm."
+    >
+      <form onSubmit={(event) => void submit(event)} noValidate>
+        <div className="grid gap-x-3 sm:grid-cols-2">
+          <SelectField
+            control={form.control}
+            name="from_account"
+            label="From account"
+            options={options}
+            error={form.formState.errors.from_account?.message}
+          />
+          <SelectField
+            control={form.control}
+            name="source_pool"
+            label="Source pool"
+            options={POOL_OPTIONS}
+            error={form.formState.errors.source_pool?.message}
+          />
+          <SelectField
+            control={form.control}
+            name="to_account"
+            label="Destination account"
+            options={options}
+            error={form.formState.errors.to_account?.message}
+          />
+          <SelectField
+            control={form.control}
+            name="destination_pool"
+            label="Destination pool"
+            options={POOL_OPTIONS}
+            error={form.formState.errors.destination_pool?.message}
+          />
+        </div>
+
+        <Field
+          label="Amount (ZEC)"
+          hint="Up to 8 decimal places."
+          error={form.formState.errors.amount?.message}
+        >
+          {(aria) => (
+            <input
+              {...aria}
+              {...form.register('amount')}
+              inputMode="decimal"
+              autoComplete="off"
+              className={controlStyles}
+            />
+          )}
+        </Field>
+
+        <Button type="submit" variant="primary" size="block" loading={send.isPending}>
+          {send.isPending ? 'Sending…' : 'Send ZEC'}
+          {!send.isPending && <ArrowRight />}
+        </Button>
+      </form>
+    </Dialog>
+  );
+}

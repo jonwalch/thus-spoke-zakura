@@ -1,5 +1,7 @@
 import { Link } from 'react-router-dom';
+import { Copy } from 'lucide-react';
 import { DataRow, Panel, PanelNote } from '@/components/ui/Panel';
+import { CopyButton } from '@/components/ui/CopyButton';
 import { Badge } from '@/components/ui/Badge';
 import { ErrorState, LoadingState } from '@/components/ui/StateBlock';
 import { SakuraMark } from '@/components/ui/SakuraMark';
@@ -7,6 +9,14 @@ import { useStatus } from '@/hooks/queries';
 import { errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { Stat } from '@/components/ui/Stat';
+
+/** Ordered as you meet them: the page you are on, then the services behind it. */
+const ENDPOINT_ROWS = [
+  { key: 'dashboard', label: 'Dashboard' },
+  { key: 'zakura_rpc', label: 'Zakura RPC' },
+  { key: 'lightwalletd', label: 'lightwalletd' },
+  { key: 'p2p', label: 'P2P' },
+] as const;
 
 export function NetworkPage() {
   const status = useStatus();
@@ -16,6 +26,7 @@ export function NetworkPage() {
 
   const node = status.data.node;
   const online = node !== null;
+  const endpoints = status.data.endpoints;
 
   return (
     <div className="grid gap-4">
@@ -103,6 +114,29 @@ export function NetworkPage() {
           peers and no relationship to Zcash mainnet or testnet.
         </PanelNote>
       </Panel>
+
+      {endpoints && (
+        <Panel eyebrow="HOST NETWORK" title="Runtime endpoints">
+          <dl>
+            {ENDPOINT_ROWS.map(({ key, label }) => (
+              <DataRow key={key} label={label}>
+                <span className="flex items-center gap-2">
+                  <code className="font-mono">{endpoints[key]}</code>
+                  <CopyButton
+                    value={endpoints[key]}
+                    label={`Copy ${label} endpoint`}
+                    icon={<Copy className="size-4" />}
+                  />
+                </span>
+              </DataRow>
+            ))}
+          </dl>
+          <PanelNote>
+            Point a wallet, a light client, or your own code at these. They are published on your
+            machine only, and change when you run the instance on different ports.
+          </PanelNote>
+        </Panel>
+      )}
     </div>
   );
 }

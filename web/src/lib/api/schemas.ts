@@ -52,12 +52,23 @@ export const chainInfoSchema = z.object({
 });
 export type ChainInfo = z.infer<typeof chainInfoSchema>;
 
+/** The ports this instance publishes, so you can point your own code at them. */
+export const endpointsSchema = z.object({
+  dashboard: z.string(),
+  zakura_rpc: z.string(),
+  lightwalletd: z.string(),
+  p2p: z.string(),
+});
+export type Endpoints = z.infer<typeof endpointsSchema>;
+
 export const statusSchema = z.object({
   instance: z.string(),
   node: chainInfoSchema.nullable().default(null),
   account_count: z.number().int().nonnegative(),
   auto_mine: z.boolean(),
   network: z.string(),
+  // Optional so a dashboard built before the server grew this field still loads.
+  endpoints: endpointsSchema.optional(),
 });
 export type Status = z.infer<typeof statusSchema>;
 

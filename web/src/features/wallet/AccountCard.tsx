@@ -71,7 +71,7 @@ export function AccountCard({ account, index = 0 }: { account: Account; index?: 
           variant="subtle"
           size="sm"
           className="flex-1"
-          onClick={openSend}
+          onClick={() => openSend(account.id)}
           aria-label={`Send from ${account.name}`}
         >
           Send

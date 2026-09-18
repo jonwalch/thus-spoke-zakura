@@ -112,4 +112,11 @@ describe('SendDialog', () => {
     expect(screen.getByLabelText('Source pool')).toBeInTheDocument();
     expect(screen.getByLabelText('Destination pool')).toBeInTheDocument();
   });
+
+  it('defaults the sender to the account the send action was opened from', () => {
+    renderWithProviders(
+      <SendDialog open onOpenChange={vi.fn()} accounts={testAccounts} defaultAccountId={3} />,
+    );
+    expect(screen.getByLabelText('From account')).toHaveTextContent('Account 3');
+  });
 });

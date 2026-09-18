@@ -14,11 +14,15 @@ type OpenDialog = 'send' | 'faucet' | 'mine' | null;
 export function WalletActionsProvider({ children }: { children: ReactNode }) {
   const [dialog, setDialog] = useState<OpenDialog>(null);
   const [faucetAccount, setFaucetAccount] = useState<number | undefined>(undefined);
+  const [sendAccount, setSendAccount] = useState<number | undefined>(undefined);
   const { data: accounts = [] } = useAccounts();
 
   const api = useMemo<WalletActionsApi>(
     () => ({
-      openSend: () => setDialog('send'),
+      openSend: (accountId) => {
+        setSendAccount(accountId);
+        setDialog('send');
+      },
       openFaucet: (accountId) => {
         setFaucetAccount(accountId);
         setDialog('faucet');
@@ -36,7 +40,15 @@ export function WalletActionsProvider({ children }: { children: ReactNode }) {
     <WalletActionsContext value={api}>
       {children}
       {/* Keyed so each dialog remounts with fresh defaults per open. */}
-      {dialog === 'send' && <SendDialog key="send" open onOpenChange={close} accounts={accounts} />}
+      {dialog === 'send' && (
+        <SendDialog
+          key={`send-${sendAccount ?? 'any'}`}
+          open
+          onOpenChange={close}
+          accounts={accounts}
+          {...(sendAccount === undefined ? {} : { defaultAccountId: sendAccount })}
+        />
+      )}
       {dialog === 'faucet' && (
         <FaucetDialog
           key={`faucet-${faucetAccount ?? 'any'}`}

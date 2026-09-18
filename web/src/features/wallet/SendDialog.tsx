@@ -16,10 +16,12 @@ export function SendDialog({
   open,
   onOpenChange,
   accounts,
+  defaultAccountId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   accounts: Account[];
+  defaultAccountId?: number;
 }) {
   const toast = useToast();
   const send = useSend();
@@ -27,7 +29,7 @@ export function SendDialog({
   const form = useForm<SendInput, unknown, SendValues>({
     resolver: zodResolver(sendSchema),
     defaultValues: {
-      from_account: '1',
+      from_account: String(defaultAccountId ?? 1),
       to_account: '2',
       source_pool: 'orchard',
       destination_pool: 'orchard',

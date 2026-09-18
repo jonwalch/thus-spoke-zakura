@@ -1,14 +1,35 @@
 # Thus Spoke Zakura
 
-A one-command, local-first Zcash Regtest environment powered by Zakura.
+A local-first Zcash Regtest environment powered by Zakura.
 
 ```console
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/zcashlabs/thus-spoke-zakura/main/install.sh | sh
 thus-spoke-zakura
 ```
 
 The launcher creates an isolated Zakura node, lightwalletd, five development
 accounts, a hidden mining treasury, faucet and mining controls, and a browser-based wallet/explorer. Host
 ports are chosen automatically and bind only to `127.0.0.1`.
+
+The installer supports Linux and macOS on x86-64 and ARM64. It verifies the
+release checksum, validates the downloaded launcher, pulls its exact matching
+runtime images, and only then atomically replaces an existing installation.
+Install a particular release with `TSZ_VERSION=v0.1.0`; use
+`TSZ_SKIP_IMAGE_PULL=1` only when the images have already been provisioned.
+
+Release `0.2.0` and later can update themselves through the same verified,
+atomic installation path:
+
+```console
+thus-spoke-zakura update --check
+thus-spoke-zakura update
+```
+
+The first command exits `0` when current, `10` when an update is available,
+and `1` on an actual error. It also supports `--json`. Pin an exact version—or
+intentionally roll back—with `thus-spoke-zakura update 0.1.0`. The existing
+binary is never replaced unless the release checksum, version validation, and
+matching image pull all succeed.
 
 ## Requirements
 
@@ -57,19 +78,19 @@ npm run lint       # ESLint, type-aware
 npm run format     # Prettier
 ```
 
-Build the runtime images and install the launcher:
+Install the launcher, then build the runtime images separately:
 
 ```console
-docker build -t ghcr.io/zakura-core/thus-spoke-zakura-app:0.1.0 .
-docker build -f docker/lightwalletd.Dockerfile -t ghcr.io/zakura-core/thus-spoke-zakura-lightwalletd:0.1.0 .
 cargo install --path crates/tsz-cli
 thus-spoke-zakura doctor
-thus-spoke-zakura start
+thus-spoke-zakura build
+thus-spoke-zakura
 ```
 
 The dashboard opens automatically. Use `--no-open` in headless or scripted
 environments. The current local runtime uses `zakuracore/zakura:1.2.0` and the
-project's `0.1.0` app and lightwalletd images. Docker builds retain Cargo
+project app and lightwalletd images whose tags exactly match the launcher's
+Cargo version. Docker builds retain Cargo
 registry, Git, and target caches through BuildKit cache mounts.
 
 ## CLI
@@ -77,7 +98,10 @@ registry, Git, and target caches through BuildKit cache mounts.
 Every command accepts `--name <instance>`; the default name is `default`.
 
 ```text
-start [--no-open] [--build|--build-dev]  Run in foreground; optionally rebuild images
+pull                Pull exact production images for this launcher version
+update [VERSION]    Check for or install a released launcher version
+build [--dev]       Build those images from the current source checkout
+start [--no-open]   Run an existing image in the foreground
 status              Show health and endpoints
 open                Open the dashboard
 endpoints [--json]  Print integration endpoints
@@ -88,11 +112,10 @@ list                List instances
 doctor              Verify Docker connectivity
 ```
 
-During development, rebuild the app and lightwalletd images before starting a
-fresh environment:
+Build optimized runtime images with:
 
 ```console
-cargo run -p thus-spoke-zakura -- start --build
+cargo run -p thus-spoke-zakura -- build
 ```
 
 For a faster edit/build/run loop, compile the workspace code without release
@@ -100,14 +123,33 @@ optimizations or LTO while keeping third-party dependencies optimized for
 usable cryptographic proving performance:
 
 ```console
-cargo run -p thus-spoke-zakura -- start --build-dev
+cargo run -p thus-spoke-zakura -- build --dev
 ```
 
-Every `start` creates a fresh development environment, deleting any previous
-state for the selected instance first. It keeps control of the terminal after
-the environment becomes ready. Press Ctrl+C (or send the platform's termination
-signal) to remove its containers, volumes, network, chain, wallet, seed, index,
-configuration, and local metadata.
+Then start the already-built images without a subcommand:
+
+```console
+cargo run -p thus-spoke-zakura
+```
+
+A published installation normally runs `thus-spoke-zakura pull` during
+installation. `start` never pulls or builds implicitly, so a run is
+reproducible and will fail with a precise command if an exact image is absent.
+The mutable `latest` image aliases are provided for human discovery only and
+are never consumed by the launcher.
+
+Only official release binaries can replace themselves. A source build may run
+`cargo run -p thus-spoke-zakura -- update --check`, but an attempted mutation
+explains how to update through Git/Cargo instead. Because `0.1.0` predates the
+command, existing `0.1.0` users must rerun the public installer once to move to
+`0.2.0`; subsequent releases can use `thus-spoke-zakura update`.
+
+With no subcommand, `thus-spoke-zakura` defaults to `start`. Every start creates
+a fresh development environment, deleting any previous state for the selected
+instance first. It keeps control of the terminal after the environment becomes
+ready. Press Ctrl+C (or send the platform's termination signal) to remove its
+containers, volumes, network, chain, wallet, seed, index, configuration, and
+local metadata.
 
 `reset --force` permanently removes the selected instance's chain, wallet,
 seed, and index volumes. No command binds services beyond loopback.
@@ -145,6 +187,18 @@ initialize its root-owned Docker named volume; its gRPC port remains bound only
 to loopback on the host.
 
 This software is for Regtest only. Generated keys must never receive real funds.
+
+## Releases
+
+Maintainers create a release candidate by updating the workspace version and
+pushing the matching `vX.Y.Z` tag. CI tests the workspace, creates native
+launcher archives for Linux and macOS on x86-64 and ARM64, publishes multi-arch
+app and lightwalletd images, emits checksums, provenance, and image SBOMs, then
+opens a draft GitHub release. Publishing that draft promotes the already-built
+image manifests to `latest` and runs an anonymous installation smoke test.
+
+The complete maintainer procedure and one-time repository settings are in
+[`RELEASING.md`](RELEASING.md).
 
 ## Troubleshooting
 

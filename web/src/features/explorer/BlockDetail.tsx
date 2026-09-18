@@ -10,6 +10,7 @@ import { errorMessage } from '@/lib/api';
 import { chainTime } from '@/lib/format';
 import { SupplyPanel } from './SupplyPanel';
 import { Stat } from '@/components/ui/Stat';
+import { BACK_LINK } from './back-link';
 
 /** Prev/next controls read as buttons but must be real links. */
 const NAV_LINK =
@@ -29,9 +30,6 @@ const TX_COLUMNS: Column[] = [
   { key: 'shielded', header: 'Orchard', align: 'right', width: '104px', collapse: true },
   { key: 'size', header: 'Size', align: 'right', width: '104px', collapse: true },
 ];
-
-const BACK_LINK =
-  'xp-raised xp-press bg-raised text-ink hover:bg-accent-soft inline-flex cursor-pointer items-center gap-1.5 rounded-xs px-3 py-2 text-[12px] font-medium';
 
 export function BlockDetail() {
   const { id = '' } = useParams<{ id: string }>();

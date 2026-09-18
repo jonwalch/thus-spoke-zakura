@@ -13,15 +13,13 @@ import { chainTime, shortHash } from '@/lib/format';
 import { summariseShielding } from './shielding';
 import { resolveTransparentInput } from './resolve-input';
 import { Stat } from '@/components/ui/Stat';
+import { BACK_LINK } from './back-link';
 
 const IO_COLUMNS: Column[] = [
   { key: 'n', header: '#', width: '72px' },
   { key: 'address', header: 'Address' },
   { key: 'value', header: 'Value', align: 'right', width: '160px' },
 ];
-
-const BACK_LINK =
-  'xp-raised xp-press bg-raised text-ink hover:bg-accent-soft inline-flex cursor-pointer items-center gap-1.5 rounded-xs px-3 py-2 text-[12px] font-medium';
 
 function PublicInputs({ vin }: { vin: TxInput[] }) {
   // The server resolves every prevout before it hands the transaction over, so

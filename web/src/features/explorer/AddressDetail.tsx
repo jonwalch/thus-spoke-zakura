@@ -10,9 +10,7 @@ import { errorMessage } from '@/lib/api';
 import { formatZecAmount } from '@/lib/money';
 import { shortHash } from '@/lib/format';
 import { Stat } from '@/components/ui/Stat';
-
-const BACK_LINK =
-  'xp-raised xp-press bg-raised text-ink hover:bg-accent-soft inline-flex cursor-pointer items-center gap-1.5 rounded-xs px-3 py-2 text-[12px] font-medium';
+import { BACK_LINK } from './back-link';
 
 export function AddressDetail() {
   const { address = '' } = useParams<{ address: string }>();

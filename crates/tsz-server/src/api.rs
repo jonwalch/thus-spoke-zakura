@@ -300,37 +300,8 @@ async fn fund_from_treasury(
     let seed = state.0.store.seed()?;
     // SDK proposals check spendability and the actual fee before construction. Total
     // balances include pending change and cannot decide whether this request is fundable.
-    let send = || {
-        state.0.wallet.send(
-            &seed,
-            TREASURY_ACCOUNT_ID,
-            "orchard",
-            &address,
-            amount_zatoshi,
-        )
-    };
-    let txid = match send().await {
-        Err(error)
-            if matches!(
-                error.downcast_ref(),
-                Some(PaymentError::InsufficientFunds { .. })
-            ) =>
-        {
-            let treasury = state.0.store.account(TREASURY_ACCOUNT_ID)?;
-            replenish_treasury(state, &treasury).await?;
-            send().await.map_err(|error| {
-                if matches!(
-                    error.downcast_ref(),
-                    Some(PaymentError::InsufficientFunds { .. })
-                ) {
-                    anyhow::Error::new(PaymentError::TreasuryExhausted)
-                } else {
-                    error
-                }
-            })?
-        }
-        result => result?,
-    };
+    let treasury = state.0.store.account(TREASURY_ACCOUNT_ID)?;
+    let txid = send_with_replenishment(state, &seed, &treasury, &address, amount_zatoshi).await?;
     let pending = state
         .0
         .store
@@ -350,18 +321,123 @@ struct TreasuryOutput {
     height: u32,
 }
 
-async fn mature_treasury_outputs(
-    state: &AppState,
+#[async_trait::async_trait]
+trait FaucetRuntime: Sync {
+    async fn send_payment(
+        &self,
+        seed: &str,
+        destination: &str,
+        amount_zatoshi: u64,
+    ) -> anyhow::Result<String>;
+    async fn chain_height(&self) -> anyhow::Result<u64>;
+    async fn treasury_outputs(&self, address: &str) -> anyhow::Result<Vec<TreasuryOutput>>;
+    async fn transaction(&self, txid: &str) -> anyhow::Result<Value>;
+    async fn enhance_transaction(&self, raw: &str, height: u32) -> anyhow::Result<()>;
+    async fn shield_coinbase(&self, seed: &str, treasury: &Account) -> anyhow::Result<()>;
+    async fn mine_and_sync(&self, blocks: u32) -> anyhow::Result<()>;
+}
+
+#[async_trait::async_trait]
+impl FaucetRuntime for AppState {
+    async fn send_payment(
+        &self,
+        seed: &str,
+        destination: &str,
+        amount_zatoshi: u64,
+    ) -> anyhow::Result<String> {
+        self.0
+            .wallet
+            .send(
+                seed,
+                TREASURY_ACCOUNT_ID,
+                "orchard",
+                destination,
+                amount_zatoshi,
+            )
+            .await
+    }
+
+    async fn chain_height(&self) -> anyhow::Result<u64> {
+        Ok(self.0.rpc.chain_info().await?.blocks)
+    }
+
+    async fn treasury_outputs(&self, address: &str) -> anyhow::Result<Vec<TreasuryOutput>> {
+        self.0
+            .rpc
+            .call("getaddressutxos", json!([{ "addresses": [address] }]))
+            .await
+    }
+
+    async fn transaction(&self, txid: &str) -> anyhow::Result<Value> {
+        self.0.rpc.transaction(txid).await
+    }
+
+    async fn enhance_transaction(&self, raw: &str, height: u32) -> anyhow::Result<()> {
+        self.0.wallet.enhance_transaction(raw, height).await
+    }
+
+    async fn shield_coinbase(&self, seed: &str, treasury: &Account) -> anyhow::Result<()> {
+        self.0
+            .wallet
+            .shield_coinbase(
+                seed,
+                TREASURY_ACCOUNT_ID,
+                &treasury.transparent_address,
+                &treasury.unified_address,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn mine_and_sync(&self, blocks: u32) -> anyhow::Result<()> {
+        mine_and_sync(self, blocks).await?;
+        Ok(())
+    }
+}
+
+async fn send_with_replenishment<R: FaucetRuntime>(
+    runtime: &R,
+    seed: &str,
+    treasury: &Account,
+    destination: &str,
+    amount_zatoshi: u64,
+) -> anyhow::Result<String> {
+    match runtime
+        .send_payment(seed, destination, amount_zatoshi)
+        .await
+    {
+        Err(error)
+            if matches!(
+                error.downcast_ref(),
+                Some(PaymentError::InsufficientFunds { .. })
+            ) =>
+        {
+            replenish_treasury(runtime, seed, treasury).await?;
+            runtime
+                .send_payment(seed, destination, amount_zatoshi)
+                .await
+                .map_err(|error| {
+                    if matches!(
+                        error.downcast_ref(),
+                        Some(PaymentError::InsufficientFunds { .. })
+                    ) {
+                        anyhow::Error::new(PaymentError::TreasuryExhausted)
+                    } else {
+                        error
+                    }
+                })
+        }
+        result => result,
+    }
+}
+
+async fn mature_treasury_outputs<R: FaucetRuntime>(
+    runtime: &R,
     treasury: &Account,
 ) -> anyhow::Result<Vec<TreasuryOutput>> {
-    let height = state.0.rpc.chain_info().await?.blocks;
-    let mut outputs: Vec<TreasuryOutput> = state
-        .0
-        .rpc
-        .call(
-            "getaddressutxos",
-            json!([{ "addresses": [&treasury.transparent_address] }]),
-        )
+    let height = runtime.chain_height().await?;
+    let mut outputs = runtime
+        .treasury_outputs(&treasury.transparent_address)
         .await?;
     // The wallet birthday is block 2; block 1 is deliberately outside its scan.
     outputs.retain(|output| {
@@ -371,16 +447,20 @@ async fn mature_treasury_outputs(
     Ok(outputs)
 }
 
-async fn replenish_treasury(state: &AppState, treasury: &Account) -> anyhow::Result<()> {
-    let mut outputs = mature_treasury_outputs(state, treasury).await?;
+async fn replenish_treasury<R: FaucetRuntime>(
+    runtime: &R,
+    seed: &str,
+    treasury: &Account,
+) -> anyhow::Result<()> {
+    let mut outputs = mature_treasury_outputs(runtime, treasury).await?;
     if outputs.is_empty() {
-        mine_and_sync(state, 102).await?;
-        outputs = mature_treasury_outputs(state, treasury).await?;
+        runtime.mine_and_sync(102).await?;
+        outputs = mature_treasury_outputs(runtime, treasury).await?;
     }
     // lightwalletd UTXOs omit tx_index, so enhance all mature rewards before
     // the SDK's coinbase-only selector evaluates them.
     for output in outputs {
-        let tx = state.0.rpc.transaction(&output.txid).await?;
+        let tx = runtime.transaction(&output.txid).await?;
         if tx.pointer("/vin/0/coinbase").is_none() {
             continue;
         }
@@ -388,23 +468,10 @@ async fn replenish_treasury(state: &AppState, treasury: &Account) -> anyhow::Res
             .get("hex")
             .and_then(Value::as_str)
             .context("Zakura omitted coinbase transaction hex")?;
-        state
-            .0
-            .wallet
-            .enhance_transaction(raw, output.height)
-            .await?;
+        runtime.enhance_transaction(raw, output.height).await?;
     }
-    state
-        .0
-        .wallet
-        .shield_coinbase(
-            &state.0.store.seed()?,
-            TREASURY_ACCOUNT_ID,
-            &treasury.transparent_address,
-            &treasury.unified_address,
-        )
-        .await?;
-    mine_and_sync(state, 1).await?;
+    runtime.shield_coinbase(seed, treasury).await?;
+    runtime.mine_and_sync(1).await?;
     Ok(())
 }
 
@@ -446,8 +513,9 @@ pub async fn provision_initial_balance(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     }
     // A fresh wallet needs scanned blocks before a proposal can determine its target height.
+    let seed = state.0.store.seed()?;
     let treasury = state.0.store.account(TREASURY_ACCOUNT_ID)?;
-    replenish_treasury(state, &treasury).await?;
+    replenish_treasury(state, &seed, &treasury).await?;
     fund_from_treasury(
         state,
         1,
@@ -719,6 +787,11 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
@@ -854,6 +927,116 @@ mod tests {
         assert_eq!(
             ApiError::from(anyhow::Error::new(PaymentError::TreasuryExhausted)).status,
             StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingFaucetRuntime {
+        events: Mutex<Vec<String>>,
+        funds_available: AtomicBool,
+        height_checks: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl FaucetRuntime for RecordingFaucetRuntime {
+        async fn send_payment(
+            &self,
+            _seed: &str,
+            _destination: &str,
+            _amount_zatoshi: u64,
+        ) -> anyhow::Result<String> {
+            self.events.lock().unwrap().push("send".into());
+            if self.funds_available.load(Ordering::SeqCst) {
+                Ok("recovered-txid".into())
+            } else {
+                Err(anyhow::Error::new(PaymentError::InsufficientFunds {
+                    available: 0,
+                    required: 100_010_000,
+                }))
+            }
+        }
+
+        async fn chain_height(&self) -> anyhow::Result<u64> {
+            let check = self.height_checks.fetch_add(1, Ordering::SeqCst);
+            let height = if check == 0 { 101 } else { 203 };
+            self.events.lock().unwrap().push(format!("height:{height}"));
+            Ok(height)
+        }
+
+        async fn treasury_outputs(&self, _address: &str) -> anyhow::Result<Vec<TreasuryOutput>> {
+            self.events.lock().unwrap().push("outputs".into());
+            Ok(vec![TreasuryOutput {
+                txid: "coinbase-txid".into(),
+                height: 2,
+            }])
+        }
+
+        async fn transaction(&self, txid: &str) -> anyhow::Result<Value> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("transaction:{txid}"));
+            Ok(json!({"vin":[{"coinbase":"00"}],"hex":"raw-coinbase"}))
+        }
+
+        async fn enhance_transaction(&self, raw: &str, height: u32) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("enhance:{raw}:{height}"));
+            Ok(())
+        }
+
+        async fn shield_coinbase(&self, _seed: &str, _treasury: &Account) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push("shield".into());
+            self.funds_available.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn mine_and_sync(&self, blocks: u32) -> anyhow::Result<()> {
+            self.events.lock().unwrap().push(format!("mine:{blocks}"));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn insufficient_funds_replenishes_from_mature_rewards_and_retries() {
+        let runtime = RecordingFaucetRuntime::default();
+        let treasury = Account {
+            id: TREASURY_ACCOUNT_ID,
+            name: "Account 6".into(),
+            unified_address: "uregtest-treasury".into(),
+            transparent_address: "tmTreasury".into(),
+            transparent_zatoshi: 0,
+            orchard_zatoshi: 0,
+        };
+
+        let txid = send_with_replenishment(
+            &runtime,
+            "seed",
+            &treasury,
+            "uregtest-recipient",
+            100_000_000,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(txid, "recovered-txid");
+        assert_eq!(
+            runtime.events.into_inner().unwrap(),
+            [
+                "send",
+                "height:101",
+                "outputs",
+                "mine:102",
+                "height:203",
+                "outputs",
+                "transaction:coinbase-txid",
+                "enhance:raw-coinbase:2",
+                "shield",
+                "mine:1",
+                "send",
+            ]
         );
     }
 }

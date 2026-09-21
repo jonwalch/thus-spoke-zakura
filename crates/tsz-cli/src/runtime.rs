@@ -16,6 +16,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+mod local;
+use local::{ExternalHost, LocalHost, NodeSource};
+
 const APP_IMAGE_REPOSITORY: &str = "ghcr.io/zcashlabs/thus-spoke-zakura-app";
 const ZAKURA_IMAGE: &str = "zakuracore/zakura:1.4.0";
 const LIGHTWALLETD_IMAGE_REPOSITORY: &str = "ghcr.io/zcashlabs/thus-spoke-zakura-lightwalletd";
@@ -69,6 +72,8 @@ struct Instance {
     name: String,
     version: u32,
     endpoints: Endpoints,
+    #[serde(default)]
+    node: NodeSource,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -115,17 +120,19 @@ impl Runtime {
         Ok(())
     }
 
-    pub fn build(&self, dev: bool) -> Result<()> {
+    pub fn build(&self, dev: bool, without_zakura: bool) -> Result<()> {
         self.doctor(false)?;
         build_project_images(dev)?;
-        ensure_image(ZAKURA_IMAGE)?;
+        if !without_zakura {
+            ensure_image(ZAKURA_IMAGE)?;
+        }
         println!("Runtime images are ready.");
         Ok(())
     }
 
-    pub fn pull(&self) -> Result<()> {
+    pub fn pull(&self, without_zakura: bool) -> Result<()> {
         self.doctor(false)?;
-        for image in [app_image(), lightwalletd_image(), ZAKURA_IMAGE.to_owned()] {
+        for image in runtime_images(without_zakura) {
             println!("Pulling {image}…");
             docker(["pull", &image])?;
         }
@@ -133,28 +140,51 @@ impl Runtime {
         Ok(())
     }
 
-    pub fn start(&self, name: &InstanceName, no_open: bool, json: bool) -> Result<()> {
+    pub fn start(
+        &self,
+        name: &InstanceName,
+        no_open: bool,
+        json: bool,
+        zakura_bin: Option<&std::path::Path>,
+        zakura_rpc: Option<&str>,
+    ) -> Result<()> {
+        let host: Box<dyn StartHost> = match (zakura_bin, zakura_rpc) {
+            (Some(path), None) => Box::new(LocalHost::new(path)?),
+            (None, Some(rpc)) => Box::new(ExternalHost::new(self, name, rpc)?),
+            (None, None) => Box::new(DockerHost),
+            _ => bail!("choose either --zakura-bin or --zakura-rpc"),
+        };
         self.doctor(false)?;
-        for image in [app_image(), lightwalletd_image(), ZAKURA_IMAGE.to_owned()] {
+        for image in runtime_images(zakura_bin.is_some() || zakura_rpc.is_some()) {
             require_image(&image)?;
         }
-        let shutdown = Shutdown::install()?;
-        self.start_with(name, no_open, json, &DockerHost, &shutdown)
+        let _lock = self.lock_instance(name)?;
+        anyhow::ensure!(
+            zakura_rpc.is_some() || !self.is_external(name)?,
+            "instance {name} has a prepared external wallet; use --zakura-rpc or reset it explicitly before changing node modes"
+        );
+        let shutdown = Shutdown::install_for(self.instance_dir(name).join("stop-request"))?;
+        self.start_with(name, no_open, json, host.as_ref(), &shutdown)
     }
 
     pub fn status(&self, name: &InstanceName, json: bool) -> Result<()> {
-        let endpoints = inspect_endpoints(&prefix(name))
-            .or_else(|_| self.read_instance(name).map(|i| i.endpoints))?;
+        let instance = self.read_instance(name)?;
+        let endpoints = if matches!(instance.node, NodeSource::Docker) {
+            inspect_endpoints(&prefix(name)).unwrap_or(instance.endpoints)
+        } else {
+            instance.endpoints
+        };
         let running = container_running(&format!("{}-app", prefix(name))).unwrap_or(false);
         if json {
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &serde_json::json!({"name": name.to_string(), "running": running, "endpoints": endpoints})
+                    &serde_json::json!({"name": name.to_string(), "running": running, "endpoints": endpoints, "node": instance.node})
                 )?
             );
         } else {
             println!("{}: {}", name, if running { "running" } else { "stopped" });
+            println!("  Node         {}", instance.node.description());
             print_endpoints(name, &endpoints);
         }
         Ok(())
@@ -252,6 +282,18 @@ impl Runtime {
 
     pub fn logs(&self, name: &InstanceName, service: Option<&str>, follow: bool) -> Result<()> {
         let service = service.unwrap_or("app");
+        if service == "zakura"
+            && let Ok(instance) = self.read_instance(name)
+        {
+            match instance.node {
+                NodeSource::LocalBinary { log, .. } => return local::logs(&log, follow),
+                NodeSource::ExternalRpc { config, .. } => bail!(
+                    "Zakura is externally managed; view logs in the terminal/debugger that started it (config: {})",
+                    config.display()
+                ),
+                NodeSource::Docker => {}
+            }
+        }
         let mut args = vec!["logs"];
         if follow {
             args.push("--follow");
@@ -262,6 +304,12 @@ impl Runtime {
     }
 
     pub fn stop(&self, name: &InstanceName) -> Result<()> {
+        let _lock = self.stop_and_lock(name)?;
+        if self.is_external(name)? {
+            self.detach_external(name)?;
+            println!("Detached {name}; its wallet and external Zakura node were preserved.");
+            return Ok(());
+        }
         self.delete_instance_resources(name)?;
         println!("Stopped and deleted {name} and all of its development data.");
         Ok(())
@@ -271,8 +319,9 @@ impl Runtime {
         if !force {
             bail!("reset deletes chain, wallet, and seed data; repeat with --force");
         }
+        let _lock = self.stop_and_lock(name)?;
         self.delete_instance_resources(name)?;
-        println!("Deleted {name}; its Docker volumes cannot be recovered.");
+        println!("Deleted {name}'s managed data; external node data, if any, was preserved.");
         Ok(())
     }
 
@@ -292,7 +341,12 @@ impl Runtime {
             println!("No environments yet.");
         } else {
             for i in instances {
-                println!("{:<20} {}", i.name, i.endpoints.dashboard);
+                println!(
+                    "{:<20} {} ({})",
+                    i.name,
+                    i.endpoints.dashboard,
+                    i.node.description()
+                );
             }
         }
         Ok(())
@@ -306,6 +360,7 @@ impl Runtime {
             name: name.to_string(),
             version: 1,
             endpoints: endpoints.clone(),
+            node: NodeSource::Docker,
         };
         fs::write(
             self.instance_dir(name).join("instance.json"),
@@ -315,13 +370,29 @@ impl Runtime {
     }
     fn read_instance(&self, name: &InstanceName) -> Result<Instance> {
         let path = self.instance_dir(name).join("instance.json");
-        serde_json::from_slice(
+        let instance: Instance = serde_json::from_slice(
             &fs::read(&path).with_context(|| format!("instance {name} does not exist"))?,
         )
-        .context("invalid instance metadata")
+        .context("invalid instance metadata")?;
+        anyhow::ensure!(
+            matches!(instance.version, 1 | 2),
+            "unsupported instance metadata version {}",
+            instance.version
+        );
+        Ok(instance)
     }
 
     fn delete_instance_resources(&self, name: &InstanceName) -> Result<()> {
+        if self.instance_dir(name).join("instance.json").exists() {
+            let instance = self.read_instance(name)?;
+            if let NodeSource::LocalBinary {
+                process: Some(process),
+                ..
+            } = instance.node
+            {
+                process.stop()?;
+            }
+        }
         let prefix = prefix(name);
         let mut failures = Vec::new();
         for service in ["app", "lightwalletd", "zakura", "init"] {
@@ -350,7 +421,8 @@ impl Runtime {
             failures.push(format!("network {prefix}: {error}"));
         }
         let dir = self.instance_dir(name);
-        if dir.exists()
+        if failures.is_empty()
+            && dir.exists()
             && let Err(error) = fs::remove_dir_all(&dir)
         {
             failures.push(format!("metadata {}: {error}", dir.display()));
@@ -364,6 +436,14 @@ impl Runtime {
             )
         }
     }
+}
+
+fn runtime_images(without_zakura: bool) -> Vec<String> {
+    let mut images = vec![app_image(), lightwalletd_image()];
+    if !without_zakura {
+        images.push(ZAKURA_IMAGE.to_owned());
+    }
+    images
 }
 
 fn format_zec(zatoshi: u64) -> String {
@@ -614,6 +694,7 @@ fn build_project_images(dev: bool) -> Result<()> {
 struct Shutdown {
     flag: Arc<AtomicBool>,
     receiver: mpsc::Receiver<()>,
+    stop_request: Option<PathBuf>,
 }
 
 impl Shutdown {
@@ -622,10 +703,11 @@ impl Shutdown {
         Self {
             flag: Arc::new(AtomicBool::new(false)),
             receiver,
+            stop_request: None,
         }
     }
 
-    fn install() -> Result<Self> {
+    fn install_for(stop_request: PathBuf) -> Result<Self> {
         let (sender, receiver) = mpsc::channel();
         let flag = Arc::new(AtomicBool::new(false));
         let handler_flag = flag.clone();
@@ -634,11 +716,17 @@ impl Shutdown {
             let _ = sender.send(());
         })
         .context("installing the shutdown signal handler")?;
-        Ok(Self { flag, receiver })
+        Ok(Self {
+            flag,
+            receiver,
+            stop_request: Some(stop_request),
+        })
     }
 
     fn try_interrupted(&self) -> bool {
-        if self.receiver.try_recv().is_ok() {
+        if self.receiver.try_recv().is_ok()
+            || self.stop_request.as_ref().is_some_and(|path| path.exists())
+        {
             self.flag.store(true, Ordering::SeqCst);
         }
         self.flag.load(Ordering::SeqCst)
@@ -652,13 +740,13 @@ impl Shutdown {
     }
 
     fn wait(&self) -> Result<()> {
-        if self.try_interrupted() {
-            return Ok(());
+        while !self.try_interrupted() {
+            if let Err(error) = self.wait_timeout(Duration::from_millis(250))
+                && !self.try_interrupted()
+            {
+                return Err(error);
+            }
         }
-        self.receiver
-            .recv()
-            .context("waiting for a shutdown signal")?;
-        self.flag.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -683,6 +771,12 @@ impl Shutdown {
 }
 
 trait StartHost {
+    fn prepare_start(&self, runtime: &Runtime, name: &InstanceName) -> Result<()> {
+        self.delete(runtime, name)
+    }
+    fn external(&self) -> bool {
+        false
+    }
     fn delete(&self, runtime: &Runtime, name: &InstanceName) -> Result<()>;
     fn allocate(
         &self,
@@ -826,8 +920,8 @@ impl Runtime {
             host,
             active: true,
         };
-        println!("Preparing a fresh {name} environment…");
-        host.delete(self, name)?;
+        println!("Preparing {name}…");
+        host.prepare_start(self, name)?;
         println!("Starting {name}…");
         let endpoints = host.allocate(self, name, shutdown)?;
         shutdown.check()?;
@@ -846,13 +940,21 @@ impl Runtime {
             host.open_url(&endpoints.dashboard)?;
         }
         if !json {
-            println!("\nPress Ctrl+C to stop and delete this development environment.");
+            if host.external() {
+                println!("\nPress Ctrl+C to detach; the wallet and external node are preserved.");
+            } else {
+                println!("\nPress Ctrl+C to stop and delete this development environment.");
+            }
         }
         host.wait_for_shutdown(shutdown)?;
-        println!("\nStopping and deleting {name}…");
+        println!("\nStopping {name}…");
         host.delete(self, name)?;
         cleanup.active = false;
-        println!("Deleted {name} and all of its development data.");
+        if host.external() {
+            println!("Detached {name}; the wallet and external node were preserved.");
+        } else {
+            println!("Deleted {name} and all of its development data.");
+        }
         Ok(())
     }
 }
@@ -876,7 +978,7 @@ fn wait_ready(
     while Instant::now() < deadline {
         shutdown.check()?;
         if Command::new("curl")
-            .args(["-fsS", &format!("{base}/api/v1/health")])
+            .args(["-fsS", "--max-time", "3", &format!("{base}/api/v1/health")])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -912,6 +1014,8 @@ fn wait_for_zakura_tip(
         let tip_available = Command::new("curl")
             .args([
                 "-sS",
+                "--max-time",
+                "3",
                 "-H",
                 "content-type: application/json",
                 "--data",

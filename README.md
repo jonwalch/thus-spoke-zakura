@@ -11,8 +11,9 @@ Thus Spoke Zakura starts everything you need for local experiments:
 - lightwalletd and JSON-RPC endpoints; and
 - a browser wallet, block explorer, and network dashboard.
 
-Nothing connects to Zcash mainnet or testnet. Every run begins with a fresh
-chain, and pressing Ctrl+C deletes the containers and development data.
+Nothing connects to Zcash mainnet or testnet. Managed runs begin with a fresh
+chain, and pressing Ctrl+C deletes the containers and development data. You can
+also attach to your own local Zakura node and preserve its chain and wallet.
 
 ![Wallet dashboard with five development accounts](docs/images/wallet.png)
 
@@ -177,6 +178,71 @@ npm test --prefix web
 npm run build --prefix web
 ```
 
+## Test a local Zakura build
+
+The app and lightwalletd still run in Docker, but Zakura can run directly from
+your checkout. Build the companion images once from this repository:
+
+```console
+cargo run -p thus-spoke-zakura -- build --dev --without-zakura
+```
+
+Build Zakura in its own checkout, then point the launcher at the resulting
+executable:
+
+```console
+cargo run -p thus-spoke-zakura -- start --zakura-bin /path/to/zakura/target/debug/zakurad
+```
+
+With an installed launcher, the command is
+`ths start --zakura-bin /path/to/zakura/target/debug/zakurad`. Use
+`ths pull --without-zakura` to download the companion images instead of building
+them. No Zakura image is required. Local networking supports Docker Desktop,
+OrbStack, and native Docker Engine on Linux; remote daemons and rootless Docker
+are not supported for local nodes.
+
+The launcher prints the executable's path/version and generated configuration.
+It creates a fresh Regtest chain with the normal five accounts, initial 5 ZEC,
+faucet, and mining controls. `ths logs zakura -f` follows the native node's log.
+Ctrl+C or `ths stop` stops the process and deletes only that instance's managed
+data. Your Zakura checkout is not used as the chain directory.
+
+To test a change, stop the launcher, rebuild Zakura, and run the same command.
+Rebuild the companion images only when changing this project's server or UI.
+
+### Start Zakura yourself
+
+To run under a debugger or control the node process yourself, first prepare a
+wallet and matching node configuration:
+
+```console
+ths --name local prepare --zakura-rpc http://127.0.0.1:18232
+```
+
+Start your binary with the configuration path printed by `prepare`:
+
+```console
+/path/to/zakurad --config /printed/path/zakurad.toml start
+```
+
+Then attach:
+
+```console
+ths --name local start --zakura-rpc http://127.0.0.1:18232
+```
+
+Use the generated configuration: startup checks the Regtest upgrade schedule
+and treasury payout before funding the wallet. Attaching mines blocks and sends
+development transactions on this chain. RPC authentication is disabled only in
+this dedicated, loopback-bound development configuration.
+
+Ctrl+C and `ths stop` detach and preserve both the external node and the prepared
+wallet. Reattach with the same command. `ths reset --force` deletes the ths wallet
+and indexing data, but preserves the external node's configuration and chain.
+After resetting, prepare again and restart your node with the new configuration
+so its mining rewards go to the new treasury. Read node logs in the terminal or
+debugger that launched it.
+
 ## How it fits together
 
 ```text
@@ -189,8 +255,9 @@ The server owns wallet synchronization and exposes the latest confirmed wallet
 snapshot to the dashboard. A hidden sixth account acts as the mining and faucet
 treasury. Account 1 starts with 5 Orchard ZEC, so you can experiment immediately.
 
-The launcher chooses exact versioned images, labels every Docker resource by
-instance, and never binds a service beyond loopback.
+The launcher chooses exact versioned companion images, labels Docker resources
+by instance, and publishes services only on loopback. By default it also runs
+the versioned Zakura image; local modes use your own executable or node.
 
 > [!WARNING]
 > This project is for Regtest development only. Never send real funds to an

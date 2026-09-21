@@ -301,6 +301,7 @@ struct Status {
     account_count: usize,
     auto_mine: bool,
     network: &'static str,
+    node_mode: String,
     endpoints: PublicEndpoints,
     wallet_sync: WalletSyncStatus,
 }
@@ -324,6 +325,7 @@ async fn status(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<
         account_count: state.0.store.user_accounts()?.len(),
         auto_mine: true,
         network: "Regtest",
+        node_mode: std::env::var("TSZ_NODE_MODE").unwrap_or_else(|_| "docker".into()),
         endpoints: PublicEndpoints {
             dashboard: format!("http://{dashboard_host}"),
             zakura_rpc: std::env::var("TSZ_PUBLIC_ZAKURA_RPC")

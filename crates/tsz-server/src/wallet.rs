@@ -159,6 +159,36 @@ pub fn regtest_network() -> LocalNetwork {
 
 impl RealWallet {
     pub fn open(data_dir: &Path, seed_hex: &str) -> Result<Self> {
+        Self::open_with_birthday(
+            data_dir,
+            seed_hex,
+            ChainState::empty(BlockHeight::from_u32(1), BlockHash([0; 32])),
+        )
+    }
+
+    pub async fn open_external(data_dir: &Path, seed_hex: &str) -> Result<Self> {
+        let endpoint =
+            std::env::var("TSZ_LIGHTWALLETD").unwrap_or_else(|_| "http://127.0.0.1:9067".into());
+        let mut client = CompactTxStreamerClient::connect(endpoint).await?;
+        let state = client
+            .get_tree_state(zcash_client_backend::proto::service::BlockId {
+                height: 1,
+                hash: vec![],
+            })
+            .await?
+            .into_inner();
+        anyhow::ensure!(
+            state.height == 1,
+            "lightwalletd did not return block 1's tree state"
+        );
+        Self::open_with_birthday(data_dir, seed_hex, state.to_chain_state()?)
+    }
+
+    fn open_with_birthday(
+        data_dir: &Path,
+        seed_hex: &str,
+        birthday_state: ChainState,
+    ) -> Result<Self> {
         let seed = hex::decode(seed_hex).context("invalid wallet seed")?;
         let secret = SecretVec::new(seed);
         let wallet_path = data_dir.join("wallet.db");
@@ -180,10 +210,7 @@ impl RealWallet {
             // SDK asks for the tree state immediately before an account birthday.
             // Start at block 2 so that the initial tree-state request is for block 1.
             // Block 1 is an expendable mining-reward block on this local regtest.
-            let birthday = AccountBirthday::from_parts(
-                ChainState::empty(BlockHeight::from_u32(1), BlockHash([0; 32])),
-                None,
-            );
+            let birthday = AccountBirthday::from_parts(birthday_state, None);
             for id in (account_count + 1)..=usize::from(crate::db::TREASURY_ACCOUNT_ID) {
                 db.create_account(&format!("Account {id}"), &secret, &birthday, None)?;
             }

@@ -824,7 +824,7 @@ impl Runtime {
         // Deliberately outside instance_dir: cleanup never removes developer-owned node files.
         let node_dir = self
             .root
-            .join("external-nodes")
+            .join(EXTERNAL_NODES_DIR)
             .join(name.to_string())
             .join(uuid::Uuid::new_v4().to_string());
         fs::create_dir_all(&node_dir)?;

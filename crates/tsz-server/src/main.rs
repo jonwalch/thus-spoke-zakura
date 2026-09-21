@@ -129,7 +129,7 @@ async fn serve(data_dir: PathBuf) -> Result<()> {
         .context("validating the node's Regtest configuration")?;
     rpc.validate_treasury(&store.account(TREASURY_ACCOUNT_ID)?.transparent_address)
         .await?;
-    if external {
+    let rpc = if external {
         validate_external_chain(&rpc, &data_dir).await?;
         // The wallet starts scanning at block 2. Bootstrap block 1 only after all
         // compatibility checks pass, and never replace an existing chain.
@@ -145,7 +145,10 @@ async fn serve(data_dir: PathBuf) -> Result<()> {
         let pending = data_dir.join("external-chain.json.tmp");
         fs::write(&pending, serde_json::to_vec(hash)?)?;
         fs::rename(pending, data_dir.join("external-chain.json"))?;
-    }
+        rpc.with_chain_anchor(hash.to_owned())
+    } else {
+        rpc
+    };
     let wallet = if external {
         let deadline = Instant::now() + Duration::from_secs(120);
         loop {
@@ -171,10 +174,15 @@ async fn serve(data_dir: PathBuf) -> Result<()> {
     } else {
         wallet::RealWallet::open(&data_dir, &store.seed()?)?
     };
+    let wallet = if external {
+        wallet.with_chain_guard(rpc.clone())
+    } else {
+        wallet
+    };
     let state = api::AppState::new(
         store,
         wallet,
-        rpc_url,
+        rpc,
         std::env::var("TSZ_INSTANCE").unwrap_or_else(|_| "default".into()),
     );
     let deadline = Instant::now() + Duration::from_secs(if external { 600 } else { 120 });

@@ -243,6 +243,14 @@ After resetting, prepare again and restart your node with the new configuration
 so its mining rewards go to the new treasury. Read node logs in the terminal or
 debugger that launched it.
 
+Interrupted startup can be retried with the same attach command: wallet setup
+resumes and reconciles the original funding payment instead of sending another.
+While attached, the server checks that the node still has the wallet's original
+block-1 anchor. Replacing or resetting that chain makes health checks fail and
+blocks wallet actions until you restore the original chain or reset and prepare
+the ths wallet again. The instance name `external-nodes` is reserved to protect
+the separately stored node data from instance cleanup.
+
 ## How it fits together
 
 ```text

@@ -15,6 +15,7 @@ pub struct NodeRpc {
     endpoint: String,
     client: Client,
     request_id: std::sync::Arc<AtomicU64>,
+    chain_anchor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,7 +40,30 @@ impl NodeRpc {
             endpoint,
             client: Client::new(),
             request_id: Default::default(),
+            chain_anchor: None,
         }
+    }
+
+    pub fn with_chain_anchor(mut self, hash: String) -> Self {
+        self.chain_anchor = Some(hash);
+        self
+    }
+
+    pub fn is_external(&self) -> bool {
+        self.chain_anchor.is_some()
+    }
+
+    pub async fn validate_chain_anchor(&self) -> Result<()> {
+        if let Some(expected) = &self.chain_anchor {
+            let actual: String = self.call("getblockhash", json!([1])).await.context(
+                "external chain anchor is unavailable; restore the node or reset the ths wallet and prepare again",
+            )?;
+            anyhow::ensure!(
+                &actual == expected,
+                "external chain changed at the wallet's birthday; reset the ths wallet and prepare again"
+            );
+        }
+        Ok(())
     }
 
     pub async fn call<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
@@ -79,6 +103,7 @@ impl NodeRpc {
     }
     pub async fn generate(&self, blocks: u32) -> Result<Vec<String>> {
         self.validate_network().await?;
+        self.validate_chain_anchor().await?;
         self.call("generate", json!([blocks])).await
     }
 
@@ -181,8 +206,146 @@ fn validate_treasury_template(template: &Value, address: &str) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
+    use axum::{Json, Router, routing::post};
+    use std::sync::{Arc, Mutex};
+
+    pub struct MockRpc {
+        pub rpc: NodeRpc,
+        pub calls: Arc<Mutex<Vec<Value>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for MockRpc {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    impl MockRpc {
+        pub async fn start(
+            handler: impl Fn(&Value) -> Result<Value, Value> + Send + Sync + 'static,
+        ) -> Self {
+            let calls = Arc::new(Mutex::new(vec![]));
+            let requests = calls.clone();
+            let handler = Arc::new(handler);
+            let app = Router::new().route(
+                "/",
+                post(move |Json(request): Json<Value>| {
+                    let handler = handler.clone();
+                    let requests = requests.clone();
+                    async move {
+                        requests.lock().unwrap().push(request.clone());
+                        Json(match handler(&request) {
+                            Ok(result) => {
+                                json!({"jsonrpc":"2.0","id":request["id"],"result":result})
+                            }
+                            Err(error) => json!({"jsonrpc":"2.0","id":request["id"],"error":error}),
+                        })
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let rpc = NodeRpc::new(format!("http://{}", listener.local_addr().unwrap()));
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            Self { rpc, calls, task }
+        }
+
+        pub fn count(&self, method: &str) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request["method"] == method)
+                .count()
+        }
+    }
+
+    pub fn regtest_reply(request: &Value) -> Result<Value, Value> {
+        match request["method"].as_str().unwrap() {
+            "getblockchaininfo" => {
+                let upgrades: serde_json::Map<String, Value> = [
+                    "Overwinter",
+                    "Sapling",
+                    "Blossom",
+                    "Heartwood",
+                    "Canopy",
+                    "NU5",
+                    "NU6",
+                ]
+                .into_iter()
+                .map(|name| (name.into(), json!({"name":name,"activationheight":1})))
+                .collect();
+                Ok(json!({"chain":"test","blocks":10,"bestblockhash":"tip","upgrades":upgrades}))
+            }
+            "getblockhash" if request["params"][0] == 0 => Ok(json!(
+                "029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327"
+            )),
+            "getblockhash" => Ok(json!("original-anchor")),
+            "generate" => Ok(json!(["mined-block"])),
+            _ => Err(json!({"code":-1,"message":"unexpected test RPC"})),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{MockRpc, regtest_reply};
+    use super::*;
+
+    #[tokio::test]
+    async fn mining_rechecks_the_external_anchor_on_every_request() {
+        use std::sync::{Arc, atomic::AtomicBool};
+        let replaced = Arc::new(AtomicBool::new(false));
+        let node = replaced.clone();
+        let server = MockRpc::start(move |request| {
+            if request["method"] == "getblockhash"
+                && request["params"][0] == 1
+                && node.load(Ordering::SeqCst)
+            {
+                Ok(json!("replacement-anchor"))
+            } else {
+                regtest_reply(request)
+            }
+        })
+        .await;
+        let rpc = server
+            .rpc
+            .clone()
+            .with_chain_anchor("original-anchor".into());
+        rpc.generate(1).await.unwrap();
+        replaced.store(true, Ordering::SeqCst);
+        let error = rpc.generate(1).await.unwrap_err();
+        assert!(error.to_string().contains("external chain changed"));
+        assert_eq!(server.count("generate"), 1);
+    }
+
+    #[tokio::test]
+    async fn missing_external_anchor_prevents_mining() {
+        let server = MockRpc::start(|request| {
+            if request["method"] == "getblockhash" && request["params"][0] == 1 {
+                Err(json!({"code":-8,"message":"block does not exist"}))
+            } else {
+                regtest_reply(request)
+            }
+        })
+        .await;
+        let rpc = server
+            .rpc
+            .clone()
+            .with_chain_anchor("original-anchor".into());
+        assert!(
+            rpc.generate(1)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("anchor is unavailable")
+        );
+        assert_eq!(server.count("generate"), 0);
+    }
 
     fn compatible_info() -> Value {
         let upgrades: serde_json::Map<String, Value> = [

@@ -22,6 +22,7 @@ use local::{ExternalHost, LocalHost, NodeSource};
 const APP_IMAGE_REPOSITORY: &str = "ghcr.io/zcashlabs/thus-spoke-zakura-app";
 const ZAKURA_IMAGE: &str = "zakuracore/zakura:1.4.0";
 const LIGHTWALLETD_IMAGE_REPOSITORY: &str = "ghcr.io/zcashlabs/thus-spoke-zakura-lightwalletd";
+const EXTERNAL_NODES_DIR: &str = "external-nodes";
 
 fn app_image() -> String {
     format!("{APP_IMAGE_REPOSITORY}:{}", env!("CARGO_PKG_VERSION"))
@@ -47,6 +48,10 @@ impl FromStr for InstanceName {
     type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self> {
+        anyhow::ensure!(
+            value != EXTERNAL_NODES_DIR,
+            "{EXTERNAL_NODES_DIR} is reserved for developer-owned node data"
+        );
         let valid = !value.is_empty()
             && value.len() <= 40
             && value
@@ -383,6 +388,12 @@ impl Runtime {
     }
 
     fn delete_instance_resources(&self, name: &InstanceName) -> Result<()> {
+        // Defense in depth for names constructed internally or loaded by older
+        // launchers: this directory is never an instance cleanup target.
+        anyhow::ensure!(
+            name.0 != EXTERNAL_NODES_DIR,
+            "refusing to delete the developer-owned node storage directory"
+        );
         if self.instance_dir(name).join("instance.json").exists() {
             let instance = self.read_instance(name)?;
             if let NodeSource::LocalBinary {
@@ -1311,9 +1322,35 @@ mod tests {
         for valid in ["default", "project-2", "a"] {
             assert!(valid.parse::<InstanceName>().is_ok());
         }
-        for invalid in ["", "UPPER", "with space", "-start", "end-"] {
+        for invalid in [
+            "",
+            "UPPER",
+            "with space",
+            "-start",
+            "end-",
+            EXTERNAL_NODES_DIR,
+        ] {
             assert!(invalid.parse::<InstanceName>().is_err());
         }
+    }
+
+    #[test]
+    fn cleanup_cannot_delete_the_external_node_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime {
+            root: dir.path().into(),
+        };
+        let node = dir.path().join(EXTERNAL_NODES_DIR).join("another-instance");
+        fs::create_dir_all(&node).unwrap();
+        let chain = node.join("chain-data");
+        fs::write(&chain, b"developer-owned chain").unwrap();
+
+        // Bypass CLI validation to exercise the cleanup boundary itself. This
+        // must fail before inspecting Docker or touching another instance.
+        let reserved = InstanceName(EXTERNAL_NODES_DIR.into());
+        let error = runtime.delete_instance_resources(&reserved).unwrap_err();
+        assert!(error.to_string().contains("refusing to delete"));
+        assert_eq!(fs::read(chain).unwrap(), b"developer-owned chain");
     }
 
     #[test]

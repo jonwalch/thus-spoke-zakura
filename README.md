@@ -14,6 +14,8 @@ Thus Spoke Zakura starts everything you need for local experiments:
 Nothing connects to Zcash mainnet or testnet. Managed runs begin with a fresh
 chain, and pressing Ctrl+C deletes the containers and development data. You can
 also attach to your own local Zakura node and preserve its chain and wallet.
+Internet and LAN nodes are not supported: the faucet, initial funding, and
+confirmation controls require a local Regtest node whose mining you control.
 
 ![Wallet dashboard with five development accounts](docs/images/wallet.png)
 
@@ -210,10 +212,10 @@ data. Your Zakura checkout is not used as the chain directory.
 To test a change, stop the launcher, rebuild Zakura, and run the same command.
 Rebuild the companion images only when changing this project's server or UI.
 
-### Start Zakura yourself
+### Attach to a node you start on localhost
 
-To run under a debugger or control the node process yourself, first prepare a
-wallet and matching node configuration:
+To run under a debugger or control a local node process yourself, first prepare
+a wallet and matching node configuration:
 
 ```console
 ths --name local prepare --zakura-rpc http://127.0.0.1:18232
@@ -230,6 +232,10 @@ Then attach:
 ```console
 ths --name local start --zakura-rpc http://127.0.0.1:18232
 ```
+
+`--zakura-rpc` accepts only `http://127.0.0.1:<port>` or
+`http://localhost:<port>` on this computer. It does not attach to internet or LAN
+nodes. The node is self-managed locally, not remotely hosted.
 
 Use the generated configuration: startup checks the Regtest upgrade schedule
 and treasury payout before funding the wallet. Attaching mines blocks and sends

@@ -78,9 +78,10 @@ describe('NetworkPage', () => {
     expect(await screen.findByText('Local Zakura executable')).toBeInTheDocument();
   });
 
-  it('explains external ownership and omits an unknown P2P endpoint', async () => {
+  it('explains local-only attachment and omits an unknown P2P endpoint', async () => {
     renderNetwork({ ...BASE, node_mode: 'external_rpc', endpoints: { ...ENDPOINTS, p2p: '' } });
-    expect(await screen.findByText('Externally managed Zakura')).toBeInTheDocument();
+    expect(await screen.findByText('Self-managed local Zakura')).toBeInTheDocument();
+    expect(screen.getByText(/Internet and LAN nodes are not supported/)).toBeInTheDocument();
     expect(screen.getByText(/preserved when you detach/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Copy P2P endpoint')).not.toBeInTheDocument();
     expect(screen.queryByText(/starts from block 0/)).not.toBeInTheDocument();

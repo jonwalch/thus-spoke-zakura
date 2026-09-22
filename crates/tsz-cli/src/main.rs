@@ -26,20 +26,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Start an environment in the foreground; interrupting deletes it.
+    /// Start a local Regtest environment in the foreground.
     Start {
         #[arg(long)]
         no_open: bool,
         /// Run a locally built Zakura executable instead of the node image.
         #[arg(long, value_name = "PATH", conflicts_with = "zakura_rpc")]
         zakura_bin: Option<PathBuf>,
-        /// Attach to a Regtest node using a wallet created by `ths prepare`.
-        #[arg(long, value_name = "URL")]
+        /// Attach to a localhost Regtest node using a wallet created by `ths prepare`.
+        #[arg(long, value_name = "LOCAL_URL")]
         zakura_rpc: Option<String>,
     },
-    /// Prepare a wallet and configuration for a node you will start yourself.
+    /// Prepare a wallet and configuration for a local Regtest node you start yourself.
     Prepare {
-        #[arg(long, value_name = "URL")]
+        /// HTTP RPC origin on 127.0.0.1 or localhost; internet and LAN nodes are unsupported.
+        #[arg(long, value_name = "LOCAL_URL")]
         zakura_rpc: String,
     },
     /// Build the runtime images from the current source.

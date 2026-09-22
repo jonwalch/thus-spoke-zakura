@@ -31,6 +31,7 @@ pub(super) enum NodeSource {
         log: PathBuf,
         process: Option<ProcessIdentity>,
     },
+    // External ownership, not a remote host. Keep the serialized name for compatibility.
     ExternalRpc {
         rpc: String,
         config: PathBuf,
@@ -49,7 +50,7 @@ impl NodeSource {
             } => {
                 format!("{} ({binary_version})", binary.display())
             }
-            Self::ExternalRpc { rpc, .. } => format!("external Zakura at {rpc}"),
+            Self::ExternalRpc { rpc, .. } => format!("self-managed local Zakura at {rpc}"),
         }
     }
 }
@@ -398,6 +399,7 @@ impl StartHost for LocalHost {
     ) -> Result<()> {
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(3))
             .build()?;
         let deadline = Instant::now() + timeout;
@@ -495,6 +497,7 @@ fn binary_version(binary: &Path) -> Result<String> {
 fn wait_for_rpc(base: &str, shutdown: &Shutdown, check: impl Fn() -> Result<()>) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(3))
         .build()?;
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -504,6 +507,7 @@ fn wait_for_rpc(base: &str, shutdown: &Shutdown, check: impl Fn() -> Result<()>)
         check()?;
         match client.post(base).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getblockchaininfo","params":[]})).send() {
             Ok(response) => {
+                anyhow::ensure!(!response.status().is_redirection(), "local Zakura RPC must not redirect to another endpoint");
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED { bail!("Zakura RPC requires authentication; use a dedicated local Regtest configuration with cookie auth disabled"); }
                 let body: serde_json::Value = response.error_for_status()?.json()?;
                 if let Some(chain) = body["result"]["chain"].as_str() {
@@ -715,7 +719,7 @@ impl StartHost for ExternalHost {
             .port_or_known_default()
             .context("missing RPC port")?;
         println!(
-            "Attaching to {rpc}\n  Config: {}\n  Startup will fund the development wallet and mine on this Regtest chain.",
+            "Attaching to local Zakura at {rpc}\n  Config: {}\n  Startup will fund the development wallet and mine on this Regtest chain.",
             config.display()
         );
         wait_for_rpc(rpc, shutdown, || Ok(()))?;
@@ -760,7 +764,7 @@ fn local_rpc(value: &str) -> Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(value).context("invalid --zakura-rpc URL")?;
     anyhow::ensure!(
         url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost")),
-        "--zakura-rpc must use http://127.0.0.1:<port> or http://localhost:<port>"
+        "--zakura-rpc is local-only: use http://127.0.0.1:<port> or http://localhost:<port>; internet and LAN nodes are unsupported"
     );
     anyhow::ensure!(
         url.username().is_empty()
@@ -1026,7 +1030,7 @@ miner_address = "treasury"
     }
 
     #[test]
-    fn external_urls_cannot_redirect_to_remote_nodes_or_embed_secrets() {
+    fn local_rpc_urls_reject_remote_hosts_and_embedded_secrets() {
         assert_eq!(
             local_rpc("http://localhost:18232").unwrap().as_str(),
             "http://127.0.0.1:18232/"
@@ -1034,6 +1038,13 @@ miner_address = "treasury"
         for url in [
             "https://127.0.0.1:18232",
             "http://example.com",
+            "http://203.0.113.1:18232",
+            "http://192.168.1.10:18232",
+            "http://10.0.0.5:18232",
+            "http://[2001:db8::1]:18232",
+            "http://localhost.example.com:18232",
+            "http://127.0.0.1@example.com:18232",
+            "http://0.0.0.0:18232",
             "http://user:secret@127.0.0.1",
             "http://127.0.0.1/rpc",
             "http://127.0.0.1?key=secret",
@@ -1041,6 +1052,63 @@ miner_address = "treasury"
         ] {
             assert!(local_rpc(url).is_err(), "accepted {url}");
         }
+    }
+
+    #[test]
+    fn remote_nodes_are_rejected_before_preparing_or_starting() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime {
+            root: dir.path().into(),
+        };
+        let name: InstanceName = "local-only".parse().unwrap();
+        for rpc in ["http://example.com:18232", "http://192.168.1.10:18232"] {
+            let error = runtime.prepare(&name, rpc, false).unwrap_err();
+            assert!(error.to_string().contains("local-only"));
+            let error = ExternalHost::new(&runtime, &name, rpc).err().unwrap();
+            assert!(error.to_string().contains("local-only"));
+        }
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn local_rpc_readiness_does_not_follow_http_redirects() {
+        use std::io::{BufRead, BufReader, Write};
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let location = format!("http://{}", destination.local_addr().unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = BufReader::new(stream.try_clone().unwrap());
+            let mut content_length = 0;
+            loop {
+                let mut line = String::new();
+                assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    content_length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            request.read_exact(&mut vec![0; content_length]).unwrap();
+            write!(stream, "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let (_sender, receiver) = mpsc::channel();
+        let error =
+            wait_for_rpc(&endpoint, &Shutdown::from_receiver(receiver), || Ok(())).unwrap_err();
+        server.join().unwrap();
+        assert!(error.to_string().contains("must not redirect"));
+        assert_eq!(
+            destination.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]

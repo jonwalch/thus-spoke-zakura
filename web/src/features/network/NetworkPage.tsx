@@ -87,7 +87,7 @@ export function NetworkPage() {
             {status.data.node_mode === 'local_binary'
               ? 'Local Zakura executable'
               : status.data.node_mode === 'external_rpc'
-                ? 'Externally managed Zakura'
+                ? 'Self-managed local Zakura'
                 : 'Docker'}
           </DataRow>
           <DataRow label="Height">
@@ -118,7 +118,7 @@ export function NetworkPage() {
         </dl>
         <PanelNote>
           {status.data.node_mode === 'external_rpc'
-            ? 'This Regtest node is managed outside ths. Its chain and your development wallet are preserved when you detach.'
+            ? 'This Regtest node runs on your machine and is managed outside ths. Internet and LAN nodes are not supported. Its chain and your development wallet are preserved when you detach.'
             : 'This chain is private to your machine and starts from block 0 on every run. It has no peers and no relationship to Zcash mainnet or testnet.'}
         </PanelNote>
       </Panel>

@@ -96,9 +96,9 @@ enum Command {
         #[arg(short, long)]
         follow: bool,
     },
-    /// Stop and delete an environment.
+    /// Stop managed nodes and delete their data; detach from self-managed nodes and retain the wallet.
     Stop,
-    /// Delete one environment and all of its volumes.
+    /// Delete ths-managed data; preserve self-managed node processes, configuration, and chains.
     Reset {
         #[arg(long)]
         force: bool,

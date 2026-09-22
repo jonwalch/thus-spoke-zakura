@@ -56,6 +56,15 @@ struct WalletSyncStatus {
     error: Option<String>,
 }
 
+impl WalletSyncStatus {
+    fn is_current_at(&self, height: u64) -> bool {
+        self.state == "ready"
+            && self
+                .fully_scanned_height
+                .is_some_and(|scanned| scanned >= height)
+    }
+}
+
 impl AppState {
     pub fn new(store: Store, wallet: RealWallet, rpc: NodeRpc, instance: String) -> Self {
         let (events, _) = broadcast::channel(128);
@@ -107,14 +116,7 @@ impl AppState {
         // height. Let the SDK reconcile those changes instead of trusting height.
         if !self.0.rpc.is_external()
             && let Some(target) = target_height
-            && self
-                .0
-                .wallet_snapshot
-                .read()
-                .await
-                .status
-                .fully_scanned_height
-                .is_some_and(|height| height >= target)
+            && self.wallet_sync_status().await.is_current_at(target)
         {
             return Ok(());
         }
@@ -192,14 +194,7 @@ impl AppState {
             let mut snapshot = self.0.wallet_snapshot.write().await;
             snapshot.status.observed_height = Some(observed);
         }
-        let scanned = self
-            .0
-            .wallet_snapshot
-            .read()
-            .await
-            .status
-            .fully_scanned_height;
-        if scanned.is_none_or(|height| height < observed) {
+        if !self.wallet_sync_status().await.is_current_at(observed) {
             self.synchronize_wallet(Some(observed)).await?;
             notify(self, "chain");
         }
@@ -1154,6 +1149,42 @@ mod tests {
 
     fn state_with_local_wallet() -> (AppState, tempfile::TempDir) {
         state_with_rpc(NodeRpc::new("http://127.0.0.1:1".into()))
+    }
+
+    #[test]
+    fn only_ready_snapshots_can_skip_sync_at_an_unchanged_height() {
+        let mut status = WalletSyncStatus {
+            state: "ready",
+            fully_scanned_height: Some(100),
+            observed_height: Some(100),
+            last_success_at: Some(123),
+            error: None,
+        };
+        assert!(status.is_current_at(100));
+        assert!(!status.is_current_at(101));
+        for state in ["error", "syncing"] {
+            status.state = state;
+            assert!(!status.is_current_at(100));
+            assert!(!status.is_current_at(99));
+        }
+        status.state = "ready";
+        status.fully_scanned_height = None;
+        assert!(!status.is_current_at(100));
+    }
+
+    #[tokio::test]
+    async fn managed_wallet_retries_failed_sync_without_a_new_block() {
+        let (state, _dir) = state_with_local_wallet();
+        {
+            let mut snapshot = state.0.wallet_snapshot.write().await;
+            snapshot.status.state = "ready";
+            snapshot.status.fully_scanned_height = Some(100);
+        }
+        // A healthy, caught-up wallet need not contact the absent indexer.
+        state.synchronize_wallet(Some(100)).await.unwrap();
+        state.0.wallet_snapshot.write().await.status.state = "error";
+        // After failure it must attempt synchronization, not return cached success.
+        assert!(state.synchronize_wallet(Some(100)).await.is_err());
     }
 
     fn state_with_rpc(rpc: NodeRpc) -> (AppState, tempfile::TempDir) {

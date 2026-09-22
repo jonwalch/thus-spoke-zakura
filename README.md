@@ -128,8 +128,8 @@ Running `ths` with no command starts the default environment.
 | `ths logs zakura -f` | Follow node logs |
 | `ths logs lightwalletd -f` | Follow lightwalletd logs |
 | `ths list` | List known environments |
-| `ths stop` | Stop and delete the environment |
-| `ths reset --force` | Force-delete one environment and all its data |
+| `ths stop` | Delete a managed environment, or detach from a self-managed node and retain its wallet |
+| `ths reset --force` | Delete ths-managed data; preserve self-managed node processes, configuration, and chains |
 | `ths doctor` | Check Docker and local configuration |
 | `ths pull` | Pull the exact images for this launcher version |
 | `ths update --check` | Check for a newer release |
@@ -242,12 +242,16 @@ and treasury payout before funding the wallet. Attaching mines blocks and sends
 development transactions on this chain. RPC authentication is disabled only in
 this dedicated, loopback-bound development configuration.
 
-Ctrl+C and `ths stop` detach and preserve both the external node and the prepared
-wallet. Reattach with the same command. `ths reset --force` deletes the ths wallet
+Ctrl+C and `ths --name local stop` detach and preserve both the local node and the prepared
+wallet. Reattach with the same command. `ths --name local reset --force` deletes the ths wallet
 and indexing data, but preserves the external node's configuration and chain.
 After resetting, prepare again and restart your node with the new configuration
 so its mining rewards go to the new treasury. Read node logs in the terminal or
 debugger that launched it.
+
+Keep `--name local` on these commands: omitting it operates on `default`, not
+the instance from this example. `prepare --json` writes only instance metadata
+to stdout; setup output and disposable development credentials go to stderr.
 
 Interrupted startup can be retried with the same attach command: wallet setup
 resumes and reconciles the original funding payment instead of sending another.

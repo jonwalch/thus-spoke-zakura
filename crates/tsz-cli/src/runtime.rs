@@ -215,9 +215,7 @@ impl Runtime {
             bail!("environment {name} is not running; start it with `ths --name {name}`");
         }
         let dashboard = self.read_instance(name)?.endpoints.dashboard;
-        let response = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()?
+        let response = local_http_client(Duration::from_secs(300))?
             .post(format!("{dashboard}/api/v1/mine"))
             .json(&serde_json::json!({"blocks": blocks}))
             .send()
@@ -253,9 +251,7 @@ impl Runtime {
             bail!("environment {name} is not running; start it with `ths --name {name}`");
         }
         let dashboard = self.read_instance(name)?.endpoints.dashboard;
-        let response = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()?
+        let response = local_http_client(Duration::from_secs(300))?
             .post(format!("{dashboard}/api/v1/faucet/address"))
             .json(&serde_json::json!({
                 "address": address,
@@ -322,7 +318,9 @@ impl Runtime {
 
     pub fn reset(&self, name: &InstanceName, force: bool) -> Result<()> {
         if !force {
-            bail!("reset deletes chain, wallet, and seed data; repeat with --force");
+            bail!(
+                "reset deletes ths-managed wallet, seed, indexing, and managed-node chain data; self-managed nodes are preserved; repeat with --force"
+            );
         }
         let _lock = self.stop_and_lock(name)?;
         self.delete_instance_resources(name)?;
@@ -483,8 +481,15 @@ fn ensure_network(prefix: &str) -> Result<()> {
     Ok(())
 }
 fn ensure_volume(volume: &str, name: &InstanceName) -> Result<()> {
+    ensure_volume_with_output(volume, name, false)
+}
+fn ensure_volume_with_output(volume: &str, name: &InstanceName, json: bool) -> Result<()> {
     if docker_output(["volume", "inspect", volume]).is_err() {
-        docker(["volume", "create", "--label", &label(name), volume])?;
+        docker_command(
+            &["volume", "create", "--label", &label(name), volume],
+            None,
+            json,
+        )?;
     }
     Ok(())
 }
@@ -985,15 +990,14 @@ fn wait_ready(
     timeout: Duration,
     shutdown: &Shutdown,
 ) -> Result<()> {
+    let client = local_http_client(Duration::from_secs(3))?;
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         shutdown.check()?;
-        if Command::new("curl")
-            .args(["-fsS", "--max-time", "3", &format!("{base}/api/v1/health")])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+        if client
+            .get(format!("{base}/api/v1/health"))
+            .send()
+            .is_ok_and(|response| response.status().is_success())
         {
             return Ok(());
         }
@@ -1024,6 +1028,8 @@ fn wait_for_zakura_tip(
         shutdown.check()?;
         let tip_available = Command::new("curl")
             .args([
+                "--noproxy",
+                "*",
                 "-sS",
                 "--max-time",
                 "3",
@@ -1088,14 +1094,18 @@ fn docker<const N: usize>(args: [&str; N]) -> Result<()> {
     docker_inherit(&args)
 }
 fn docker_inherit(args: &[&str]) -> Result<()> {
-    docker_command(args, None)
+    docker_command(args, None, false)
 }
 fn docker_inherit_in(args: &[&str], current_dir: &std::path::Path) -> Result<()> {
-    docker_command(args, Some(current_dir))
+    docker_command(args, Some(current_dir), false)
 }
-fn docker_command(args: &[&str], current_dir: Option<&std::path::Path>) -> Result<()> {
+fn docker_command(args: &[&str], current_dir: Option<&std::path::Path>, json: bool) -> Result<()> {
     let mut command = Command::new("docker");
     command.args(args);
+    if json {
+        // Reserve stdout for the final JSON document, including during initialization.
+        command.stdout(Stdio::from(std::io::stderr()));
+    }
     if let Some(current_dir) = current_dir {
         command.current_dir(current_dir);
     }
@@ -1114,6 +1124,14 @@ fn docker_output<const N: usize>(args: [&str; N]) -> Result<String> {
         bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
     }
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+
+fn local_http_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout)
+        .build()?)
 }
 fn docker_logs(container: &str) -> Result<String> {
     let output = Command::new("docker")

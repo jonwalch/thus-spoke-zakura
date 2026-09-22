@@ -397,11 +397,7 @@ impl StartHost for LocalHost {
         timeout: Duration,
         shutdown: &Shutdown,
     ) -> Result<()> {
-        let client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(3))
-            .build()?;
+        let client = local_http_client(Duration::from_secs(3))?;
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             shutdown.check()?;
@@ -495,11 +491,7 @@ fn binary_version(binary: &Path) -> Result<String> {
 }
 
 fn wait_for_rpc(base: &str, shutdown: &Shutdown, check: impl Fn() -> Result<()>) -> Result<()> {
-    let client = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(3))
-        .build()?;
+    let client = local_http_client(Duration::from_secs(3))?;
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut last_error = String::new();
     while Instant::now() < deadline {
@@ -513,10 +505,16 @@ fn wait_for_rpc(base: &str, shutdown: &Shutdown, check: impl Fn() -> Result<()>)
                 if let Some(chain) = body["result"]["chain"].as_str() {
                     anyhow::ensure!(chain.eq_ignore_ascii_case("regtest") || chain == "test", "expected Regtest, but Zakura reports {chain}");
                     let genesis: serde_json::Value = client.post(base).json(&serde_json::json!({"jsonrpc":"2.0","id":2,"method":"getblockhash","params":[0]})).send()?.error_for_status()?.json()?;
-                    anyhow::ensure!(genesis["result"].as_str() == Some("029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327"), "Zakura must use the standard Regtest genesis block");
-                    return Ok(());
+                    if let Some(hash) = genesis["result"].as_str() {
+                        anyhow::ensure!(hash == "029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327", "Zakura must use the standard Regtest genesis block");
+                        return Ok(());
+                    }
+                    // getblockchaininfo can answer before genesis has entered the
+                    // best chain. An unavailable block is not a mismatched block.
+                    last_error = genesis.to_string();
+                } else {
+                    last_error = body.to_string();
                 }
-                last_error = body.to_string();
             }
             Err(error) => last_error = error.to_string(),
         }
@@ -854,15 +852,16 @@ impl Runtime {
             },
         };
         let prefix = prefix(name);
+        let run = |args: &[&str]| docker_command(args, None, json);
         // A failed prepare can be retried against the same wallet volume.
         for suffix in ["wallet", "config", "lightwalletd"] {
-            ensure_volume(&format!("{prefix}-{suffix}"), name)?;
+            ensure_volume_with_output(&format!("{prefix}-{suffix}"), name, json)?;
         }
         let init = format!("{prefix}-init");
         if container_exists(&init)? {
-            docker(["rm", "-f", &init])?;
+            run(&["rm", "-f", &init])?;
         }
-        docker([
+        run(&[
             "create",
             "--name",
             &init,
@@ -876,8 +875,8 @@ impl Runtime {
             "init",
             "--defer-wallet",
         ])?;
-        docker(["start", "-a", &init])?;
-        docker([
+        run(&["start", "-a", &init])?;
+        run(&[
             "cp",
             &format!("{init}:/config/zakurad.toml"),
             config.to_str().context("invalid config path")?,
@@ -1055,6 +1054,93 @@ miner_address = "treasury"
     }
 
     #[test]
+    fn prepare_json_and_local_readiness_keep_their_output_and_proxy_contracts() {
+        use std::{io::Write, os::unix::fs::PermissionsExt};
+        const CHILD_ROOT: &str = "TSZ_TEST_PREPARE_ROOT";
+        const MARKER: &str = "\nPREPARE_JSON_OUTPUT\n";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            // Run in a subprocess so proxy/PATH settings and stdout capture are isolated.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 2048];
+                let _ = stream.read(&mut request).unwrap();
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+            });
+            let (_sender, receiver) = mpsc::channel();
+            wait_ready(
+                &endpoint,
+                "unused-app",
+                Duration::from_secs(2),
+                &Shutdown::from_receiver(receiver),
+            )
+            .unwrap();
+            server.join().unwrap();
+            let runtime = Runtime { root: root.into() };
+            let name = "json-test".parse().unwrap();
+            print!("{MARKER}");
+            runtime
+                .prepare(&name, "http://localhost:18232", true)
+                .unwrap();
+            print!("{MARKER}");
+            runtime
+                .prepare(&name, "http://localhost:18232", true)
+                .unwrap();
+            print!("{MARKER}");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let docker = dir.path().join("docker");
+        fs::write(&docker, r#"#!/bin/sh
+case "$1 $2" in
+  'context inspect') echo 'unix:///mock-docker.sock' ;;
+  'info --format') echo '{"OperatingSystem":"Docker Desktop"}' ;;
+  'image inspect') exit 0 ;;
+  'volume inspect'|'container inspect') exit 1 ;;
+  'volume create'|'create --name') echo 'created Docker resource' ;;
+  'start -a') echo 'DISPOSABLE TEST CREDENTIALS' ;;
+  cp\ *) printf '[network]\nlisten_addr = "127.0.0.1:1"\n[rpc]\nlisten_addr = "127.0.0.1:2"\n[state]\ncache_dir = "/data"\n[mining]\nminer_address = "test"\n' > "$3" ;;
+  *) echo "unexpected Docker command: $*" >&2; exit 1 ;;
+esac
+"#).unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "runtime::local::tests::prepare_json_and_local_readiness_keep_their_output_and_proxy_contracts", "--nocapture"])
+            .env(CHILD_ROOT, dir.path().join("instances"))
+            .env("PATH", std::env::join_paths(std::iter::once(dir.path().to_path_buf()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap()))).unwrap())
+            .env_remove("DOCKER_HOST").env_remove("DOCKER_CONTEXT");
+        for key in [
+            "http_proxy",
+            "HTTP_PROXY",
+            "https_proxy",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+        ] {
+            command.env(key, "http://127.0.0.1:1");
+        }
+        command.env("no_proxy", "").env("NO_PROXY", "");
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let documents: Vec<_> = stdout.split(MARKER).collect();
+        assert_eq!(documents.len(), 4, "{stdout}");
+        let fresh: serde_json::Value = serde_json::from_str(documents[1]).unwrap();
+        let repeated: serde_json::Value = serde_json::from_str(documents[2]).unwrap();
+        assert_eq!(fresh, repeated);
+        assert_eq!(fresh["name"], "json-test");
+        assert!(!stdout.contains("DISPOSABLE TEST CREDENTIALS"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("DISPOSABLE TEST CREDENTIALS"));
+    }
+
+    #[test]
     fn remote_nodes_are_rejected_before_preparing_or_starting() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime {
@@ -1109,6 +1195,80 @@ miner_address = "treasury"
             destination.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
+    }
+
+    #[test]
+    fn local_rpc_readiness_retries_missing_genesis_but_rejects_wrong_genesis() {
+        use std::io::{BufRead, BufReader, Write};
+        for (hash, valid) in [
+            (
+                "029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327",
+                true,
+            ),
+            ("wrong-genesis", false),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let server = std::thread::spawn(move || {
+                let info = serde_json::json!({"result": {"chain": "test", "blocks": 0}});
+                let replies = [
+                    info.clone(),
+                    serde_json::json!({"error": {"code": -1, "message": "No blocks in state"}}),
+                    info,
+                    serde_json::json!({"result": hash}),
+                ];
+                for reply in replies {
+                    let mut stream = loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => break stream,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline, "RPC request never arrived");
+                                std::thread::sleep(Duration::from_millis(10));
+                            }
+                            Err(error) => panic!("accepting RPC request: {error}"),
+                        }
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut request = BufReader::new(stream.try_clone().unwrap());
+                    let mut content_length = 0;
+                    loop {
+                        let mut line = String::new();
+                        assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':')
+                            && name.eq_ignore_ascii_case("content-length")
+                        {
+                            content_length = value.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                    request.read_exact(&mut vec![0; content_length]).unwrap();
+                    let body = reply.to_string();
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                }
+            });
+            let (_sender, receiver) = mpsc::channel();
+            let result = wait_for_rpc(&endpoint, &Shutdown::from_receiver(receiver), || {
+                anyhow::ensure!(Instant::now() < deadline, "readiness test timed out");
+                Ok(())
+            });
+            server.join().unwrap();
+            if valid {
+                result.unwrap();
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("standard Regtest genesis")
+                );
+            }
+        }
     }
 
     #[test]

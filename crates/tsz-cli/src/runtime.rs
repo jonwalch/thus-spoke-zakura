@@ -168,7 +168,11 @@ impl Runtime {
             zakura_rpc.is_some() || !self.is_external(name)?,
             "instance {name} has a prepared external wallet; use --zakura-rpc or reset it explicitly before changing node modes"
         );
-        let shutdown = Shutdown::install_for(self.instance_dir(name).join("stop-request"))?;
+        let stop_request = self.stop_request_path(name);
+        if stop_request.exists() {
+            fs::remove_file(&stop_request)?;
+        }
+        let shutdown = Shutdown::install_for(stop_request)?;
         self.start_with(name, no_open, json, host.as_ref(), &shutdown)
     }
 

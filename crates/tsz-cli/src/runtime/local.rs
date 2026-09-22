@@ -272,14 +272,30 @@ impl LocalHost {
 
 impl StartHost for LocalHost {
     fn delete(&self, runtime: &Runtime, name: &InstanceName) -> Result<()> {
-        // Stop RPC consumers before the node. Preserve metadata if termination fails.
+        // Try RPC consumers first, but always stop the node even if Docker fails.
+        // Keep metadata and data if any cleanup attempt reports a failure.
+        let mut failures = Vec::new();
         for service in ["app", "lightwalletd"] {
             let target = format!("{}-{service}", prefix(name));
-            if container_exists(&target)? {
-                docker(["rm", "-f", &target])?;
+            let result = container_exists(&target).and_then(|exists| {
+                if exists {
+                    docker(["rm", "-f", &target])
+                } else {
+                    Ok(())
+                }
+            });
+            if let Err(error) = result {
+                failures.push(format!("container {target}: {error}"));
             }
         }
-        self.stop_child()?;
+        if let Err(error) = self.stop_child() {
+            failures.push(format!("native Zakura: {error}"));
+        }
+        anyhow::ensure!(
+            failures.is_empty(),
+            "could not stop every instance resource; retaining development data: {}",
+            failures.join("; ")
+        );
         runtime.delete_instance_resources(name)
     }
 
@@ -915,11 +931,12 @@ impl Runtime {
         if docker_output(["network", "inspect", &prefix]).is_ok() {
             docker(["network", "rm", &prefix])?;
         }
-        let stop = self.instance_dir(name).join("stop-request");
-        if stop.exists() {
-            fs::remove_file(stop)?;
-        }
         Ok(())
+    }
+
+    pub(super) fn stop_request_path(&self, name: &InstanceName) -> PathBuf {
+        // A concurrent stopper must not recreate files inside a directory being deleted.
+        self.root.join(format!("{name}.stop-request"))
     }
 
     fn lock_file(&self, name: &InstanceName) -> Result<File> {
@@ -942,19 +959,18 @@ impl Runtime {
 
     pub(super) fn stop_and_lock(&self, name: &InstanceName) -> Result<InstanceLock> {
         let lock = self.lock_file(name)?;
+        let stop_request = self.stop_request_path(name);
         let deadline = Instant::now() + Duration::from_secs(45);
         loop {
             match lock.try_lock() {
-                Ok(()) => return Ok(InstanceLock(lock)),
-                Err(TryLockError::WouldBlock) => {
-                    let dir = self.instance_dir(name);
-                    if dir.is_dir() {
-                        match fs::write(dir.join("stop-request"), b"stop") {
-                            Ok(()) => {}
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(error) => return Err(error.into()),
-                        }
+                Ok(()) => {
+                    if stop_request.exists() {
+                        fs::remove_file(&stop_request)?;
                     }
+                    return Ok(InstanceLock(lock));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    fs::write(&stop_request, b"stop")?;
                     anyhow::ensure!(
                         Instant::now() < deadline,
                         "environment {name} did not stop within 45 seconds; data was retained"
@@ -1334,6 +1350,136 @@ esac
         fs::write(marker, "stop").unwrap();
         assert!(shutdown.check().is_err());
         shutdown.wait().unwrap();
+    }
+
+    #[test]
+    fn concurrent_stop_keeps_its_request_outside_instance_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime {
+            root: dir.path().into(),
+        };
+        let name: InstanceName = "concurrent-stop".parse().unwrap();
+        let instance_dir = runtime.instance_dir(&name);
+        fs::create_dir_all(&instance_dir).unwrap();
+        let lock = runtime.lock_instance(&name).unwrap();
+        let worker_root = runtime.root.clone();
+        let worker_name = name.clone();
+        let worker =
+            std::thread::spawn(move || Runtime { root: worker_root }.stop_and_lock(&worker_name));
+        let stop_request = runtime.stop_request_path(&name);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !stop_request.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let requested = stop_request.exists();
+        let outside = !stop_request.starts_with(&instance_dir);
+        fs::remove_dir_all(&instance_dir).unwrap();
+        // The stopper keeps requesting shutdown while the launcher holds its lock.
+        std::thread::sleep(Duration::from_millis(250));
+        let request_survived = stop_request.exists();
+        let instance_absent = !instance_dir.exists();
+        drop(lock);
+        drop(worker.join().unwrap().unwrap());
+        assert!(requested && outside && request_survived && instance_absent);
+        assert!(
+            !stop_request.exists(),
+            "the stopper must clear its request after acquiring the lock"
+        );
+    }
+
+    #[test]
+    fn native_cleanup_stops_child_and_retains_data_when_companion_removal_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        const CHILD_ROOT: &str = "TSZ_TEST_CLEANUP_ROOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let runtime = Runtime { root: root.into() };
+            let name: InstanceName = "cleanup-test".parse().unwrap();
+            let dir = runtime.instance_dir(&name);
+            fs::create_dir_all(&dir).unwrap();
+            let chain = dir.join("chain-data");
+            fs::write(&chain, "retain for recovery").unwrap();
+            let child = Command::new("sleep").arg("30").spawn().unwrap();
+            let identity = ProcessIdentity::capture(child.id()).unwrap();
+            let host = LocalHost {
+                binary: "sleep".into(),
+                version: "test".into(),
+                networking: Networking::Host,
+                child: RefCell::new(Some(child)),
+                log: RefCell::new(None),
+            };
+            runtime
+                .save_instance(
+                    &name,
+                    &Instance {
+                        name: name.to_string(),
+                        version: 2,
+                        endpoints: Endpoints::default(),
+                        node: NodeSource::LocalBinary {
+                            binary: host.binary.clone(),
+                            binary_version: host.version.clone(),
+                            config: dir.join("zakurad.toml"),
+                            log: dir.join("zakura.log"),
+                            process: Some(identity.clone()),
+                        },
+                    },
+                )
+                .unwrap();
+            let result = host.delete(&runtime, &name);
+            let stopped = !identity.is_running().unwrap();
+            // Reap the test process even if cleanup regresses and leaves it alive.
+            host.stop_child().unwrap();
+            assert!(
+                stopped,
+                "Docker cleanup failure left the native node running"
+            );
+            let failed = std::env::var("TSZ_TEST_FAIL_SERVICE").unwrap();
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&format!("tsz-{name}-{failed}"))
+            );
+            assert_eq!(fs::read_to_string(&chain).unwrap(), "retain for recovery");
+            assert!(matches!(
+                runtime.read_instance(&name).unwrap().node,
+                NodeSource::LocalBinary { .. }
+            ));
+            assert_eq!(
+                fs::read_to_string(runtime.root.join("removals")).unwrap(),
+                "tsz-cleanup-test-app\ntsz-cleanup-test-lightwalletd\n"
+            );
+            return;
+        }
+        // Isolate the mock Docker PATH from other tests and never contact a daemon.
+        let dir = tempfile::tempdir().unwrap();
+        let docker = dir.path().join("docker");
+        fs::write(
+            &docker,
+            r#"#!/bin/sh
+case "$1 $2" in
+  'container inspect') exit 0 ;;
+  'rm -f')
+    echo "$3" >> "$TSZ_TEST_CLEANUP_ROOT/removals"
+    if [ "$3" = "tsz-cleanup-test-$TSZ_TEST_FAIL_SERVICE" ]; then exit 1; fi ;;
+  *) echo "unexpected Docker command: $*" >&2; exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
+        for service in ["app", "lightwalletd"] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "runtime::local::tests::native_cleanup_stops_child_and_retains_data_when_companion_removal_fails", "--nocapture"])
+                .env(CHILD_ROOT, dir.path().join(service))
+                .env("TSZ_TEST_FAIL_SERVICE", service)
+                .env("PATH", std::env::join_paths(std::iter::once(dir.path().to_path_buf()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap()))).unwrap())
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]

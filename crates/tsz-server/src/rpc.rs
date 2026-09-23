@@ -104,7 +104,14 @@ impl NodeRpc {
             .json(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .send()
             .await
-            .with_context(|| format!("calling Zakura {method}"))?;
+            .map_err(|error| {
+                let context = if error.is_timeout() {
+                    format!("Zakura {method} timed out after {timeout:?}")
+                } else {
+                    format!("calling Zakura {method}")
+                };
+                anyhow::Error::new(error).context(context)
+            })?;
         let status = response.status();
         anyhow::ensure!(
             !status.is_redirection(),
@@ -334,7 +341,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rpc_times_out_when_the_node_never_answers() {
+    async fn call_gives_up_on_a_node_that_never_answers() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let rpc = NodeRpc::new(format!("http://{}", listener.local_addr().unwrap()));
         // The outer deadline makes a missing request timeout fail, not hang.
@@ -345,6 +352,10 @@ mod tests {
         .await
         .expect("RPC request did not honor its timeout")
         .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Zakura getblockcount timed out after 50ms"
+        );
         assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_timeout());
     }
 

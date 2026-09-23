@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use reqwest::Client;
@@ -9,6 +12,17 @@ use zcash_primitives::transaction::Transaction;
 use zcash_protocol::consensus::{BlockHeight, BranchId};
 
 use crate::wallet::regtest_network;
+
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+const GENERATE_TIMEOUT: Duration = Duration::from_secs(3600);
+
+fn call_timeout(method: &str) -> Duration {
+    if method == "generate" {
+        GENERATE_TIMEOUT
+    } else {
+        CALL_TIMEOUT
+    }
+}
 
 #[derive(Clone)]
 pub struct NodeRpc {
@@ -73,15 +87,20 @@ impl NodeRpc {
     }
 
     pub async fn call<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
+        self.call_within(call_timeout(method), method, params).await
+    }
+
+    async fn call_within<T: DeserializeOwned>(
+        &self,
+        timeout: Duration,
+        method: &str,
+        params: Value,
+    ) -> Result<T> {
         let id = self.request_id.fetch_add(1, Ordering::Relaxed);
         let response = self
             .client
             .post(&self.endpoint)
-            .timeout(std::time::Duration::from_secs(if method == "generate" {
-                300
-            } else {
-                30
-            }))
+            .timeout(timeout)
             .json(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .send()
             .await
@@ -305,6 +324,58 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::{MockRpc, regtest_reply};
     use super::*;
+
+    #[test]
+    fn only_mining_gets_the_one_hour_timeout() {
+        assert_eq!(call_timeout("generate"), Duration::from_secs(3600));
+        for method in ["getblockchaininfo", "getblockhash", "sendrawtransaction"] {
+            assert_eq!(call_timeout(method), Duration::from_secs(30));
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_times_out_when_the_node_never_answers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let rpc = NodeRpc::new(format!("http://{}", listener.local_addr().unwrap()));
+        // The outer deadline makes a missing request timeout fail, not hang.
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            rpc.call_within::<Value>(Duration::from_millis(50), "getblockcount", json!([])),
+        )
+        .await
+        .expect("RPC request did not honor its timeout")
+        .unwrap_err();
+        assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_timeout());
+    }
+
+    #[tokio::test]
+    async fn rpc_timeout_also_covers_reading_the_response_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let rpc = NodeRpc::new(format!("http://{}", listener.local_addr().unwrap()));
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request_start = [0; 1];
+            socket.read_exact(&mut request_start).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{")
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            rpc.call_within::<Value>(Duration::from_millis(100), "getblockcount", json!([])),
+        )
+        .await;
+        server.abort();
+        let error = result
+            .expect("RPC response body did not honor its timeout")
+            .unwrap_err();
+        assert_eq!(error.to_string(), "decoding Zakura response");
+        assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_timeout());
+    }
 
     #[tokio::test]
     async fn rpc_does_not_follow_http_redirects() {

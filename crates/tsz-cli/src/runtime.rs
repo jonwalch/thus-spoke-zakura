@@ -23,6 +23,9 @@ const APP_IMAGE_REPOSITORY: &str = "ghcr.io/zcashlabs/thus-spoke-zakura-app";
 const ZAKURA_IMAGE: &str = "zakuracore/zakura:1.4.0";
 const LIGHTWALLETD_IMAGE_REPOSITORY: &str = "ghcr.io/zcashlabs/thus-spoke-zakura-lightwalletd";
 const EXTERNAL_NODES_DIR: &str = "external-nodes";
+// Exceed the server's one-hour generate timeout, leaving five minutes for
+// chain checks, indexer catch-up, and wallet synchronization.
+const MINE_TIMEOUT: Duration = Duration::from_secs(3900);
 
 fn app_image() -> String {
     format!("{APP_IMAGE_REPOSITORY}:{}", env!("CARGO_PKG_VERSION"))
@@ -219,9 +222,7 @@ impl Runtime {
             bail!("environment {name} is not running; start it with `ths --name {name}`");
         }
         let dashboard = self.read_instance(name)?.endpoints.dashboard;
-        let response = local_http_client(Duration::from_secs(300))?
-            .post(format!("{dashboard}/api/v1/mine"))
-            .json(&serde_json::json!({"blocks": blocks}))
+        let response = mining_request(&dashboard, blocks)?
             .send()
             .with_context(|| format!("asking environment {name} to mine {blocks} blocks"))?;
         let status = response.status();
@@ -1137,6 +1138,14 @@ fn local_http_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
         .timeout(timeout)
         .build()?)
 }
+
+fn mining_request(dashboard: &str, blocks: u32) -> Result<reqwest::blocking::RequestBuilder> {
+    Ok(local_http_client(Duration::from_secs(30))?
+        .post(format!("{dashboard}/api/v1/mine"))
+        .timeout(MINE_TIMEOUT)
+        .json(&serde_json::json!({"blocks": blocks})))
+}
+
 fn docker_logs(container: &str) -> Result<String> {
     let output = Command::new("docker")
         .args(["logs", "--tail", "50", container])
@@ -1154,6 +1163,19 @@ fn docker_logs(container: &str) -> Result<String> {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn mining_request_allows_one_hour_plus_synchronization_time() {
+        let request = mining_request("http://127.0.0.1:1234", 10_000)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(request.timeout(), Some(&Duration::from_secs(3900)));
+        assert_eq!(request.url().path(), "/api/v1/mine");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({"blocks": 10_000}));
+    }
 
     struct RecordingHost {
         events: Arc<Mutex<Vec<String>>>,

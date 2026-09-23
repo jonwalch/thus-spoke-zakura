@@ -148,6 +148,10 @@ ths mine 10 --name alice
 Each named environment gets its own ports and Docker resources. Run each one in
 a separate terminal.
 
+Ordinary Zakura RPC calls time out after 30 seconds; mining gets up to one hour.
+`ths mine` allows 65 minutes for the full request, including chain checks and
+wallet synchronization.
+
 ## Develop from source
 
 You need Rust 1.98, Node 24, and Docker.

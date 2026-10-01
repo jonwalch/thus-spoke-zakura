@@ -304,7 +304,12 @@ impl StartHost for LocalHost {
         runtime: &Runtime,
         name: &InstanceName,
         shutdown: &Shutdown,
+        port_offset: u16,
     ) -> Result<Endpoints> {
+        let ports = host_ports(port_offset)?;
+        for port in [ports.dashboard, ports.lightwalletd, ports.rpc, ports.p2p] {
+            require_free_loopback(port)?;
+        }
         let prefix = prefix(name);
         let dir = runtime.instance_dir(name);
         fs::create_dir_all(&dir)?;
@@ -357,8 +362,8 @@ impl StartHost for LocalHost {
         ])?;
         let template = fs::read_to_string(&config)?;
         // Keep both reservations until all ports have been chosen to avoid duplicates.
-        let rpc_socket = TcpListener::bind("127.0.0.1:0")?;
-        let p2p_socket = TcpListener::bind("127.0.0.1:0")?;
+        let rpc_socket = TcpListener::bind(("127.0.0.1", ports.rpc))?;
+        let p2p_socket = TcpListener::bind(("127.0.0.1", ports.p2p))?;
         let rpc_port = rpc_socket.local_addr()?.port();
         let p2p_port = p2p_socket.local_addr()?.port();
         fs::write(
@@ -395,7 +400,7 @@ impl StartHost for LocalHost {
         let endpoints = start_companions(
             name,
             self.networking,
-            rpc_port,
+            &ports,
             &rpc,
             &format!("127.0.0.1:{p2p_port}"),
             "local_binary",
@@ -546,7 +551,7 @@ fn run_docker(args: Vec<String>) -> Result<()> {
 fn start_companions(
     name: &InstanceName,
     networking: Networking,
-    rpc_port: u16,
+    ports: &HostPorts,
     public_rpc: &str,
     p2p: &str,
     node_mode: &str,
@@ -555,8 +560,9 @@ fn start_companions(
     let prefix = prefix(name);
     let network = networking.network(&prefix);
     let rpc_host = networking.rpc_host();
-    let lwd_socket = TcpListener::bind("127.0.0.1:0")?;
-    let app_socket = TcpListener::bind("127.0.0.1:0")?;
+    let rpc_port = ports.rpc;
+    let lwd_socket = TcpListener::bind(("127.0.0.1", ports.lightwalletd))?;
+    let app_socket = TcpListener::bind(("127.0.0.1", ports.dashboard))?;
     let lwd_port = lwd_socket.local_addr()?.port();
     let app_port = app_socket.local_addr()?.port();
     let host = networking == Networking::Host;
@@ -581,7 +587,7 @@ fn start_companions(
             "--network-alias".into(),
             "lightwalletd".into(),
             "-p".into(),
-            "127.0.0.1::9067".into(),
+            loopback_publish(lwd_port, 9067),
         ]);
     }
     lwd.extend([
@@ -638,7 +644,7 @@ fn start_companions(
     .map(str::to_owned)
     .collect();
     if !host {
-        app.extend(["-p".into(), "127.0.0.1::8080".into()]);
+        app.extend(["-p".into(), loopback_publish(app_port, 8080)]);
     }
     for env in [
         format!(
@@ -681,6 +687,8 @@ fn start_companions(
         rpc: public_rpc.into(),
         lightwalletd: public_lwd,
         p2p: p2p.into(),
+        network: default_regtest(),
+        tls: false,
     })
 }
 
@@ -720,7 +728,11 @@ impl StartHost for ExternalHost {
         runtime: &Runtime,
         name: &InstanceName,
         shutdown: &Shutdown,
+        port_offset: u16,
     ) -> Result<Endpoints> {
+        let mut ports = host_ports(port_offset)?;
+        require_free_loopback(ports.dashboard)?;
+        require_free_loopback(ports.lightwalletd)?;
         let mut instance = runtime.read_instance(name)?;
         let NodeSource::ExternalRpc { rpc, p2p, config } = &instance.node else {
             bail!("instance is not prepared for an external node");
@@ -732,6 +744,7 @@ impl StartHost for ExternalHost {
         let port = local_rpc(rpc)?
             .port_or_known_default()
             .context("missing RPC port")?;
+        ports.rpc = port;
         println!(
             "Attaching to local Zakura at {rpc}\n  Config: {}\n  Startup will fund the development wallet and mine on this Regtest chain.",
             config.display()
@@ -743,7 +756,7 @@ impl StartHost for ExternalHost {
         instance.endpoints = start_companions(
             name,
             self.networking,
-            port,
+            &ports,
             rpc,
             p2p,
             "external_rpc",
@@ -1015,8 +1028,13 @@ mod tests {
 [network]
 network = "Regtest"
 listen_addr = "0.0.0.0:18233"
+[network.testnet_parameters]
+lockbox_disbursements = [{ address = "lockbox-marker", amount = 0 }]
 [network.testnet_parameters.activation_heights]
 NU6 = 1
+"NU6.1" = 1
+"NU6.2" = 1
+"NU6.3" = 1
 [rpc]
 listen_addr = "0.0.0.0:18232"
 enable_cookie_auth = false
@@ -1038,9 +1056,20 @@ miner_address = "treasury"
             config["network"]["listen_addr"].as_str(),
             Some("127.0.0.1:30002")
         );
+        let parameters = &config["network"]["testnet_parameters"];
+        for upgrade in ["NU6", "NU6.1", "NU6.2", "NU6.3"] {
+            assert_eq!(
+                parameters["activation_heights"][upgrade].as_integer(),
+                Some(1)
+            );
+        }
         assert_eq!(
-            config["network"]["testnet_parameters"]["activation_heights"]["NU6"].as_integer(),
-            Some(1)
+            parameters["lockbox_disbursements"][0]["address"].as_str(),
+            Some("lockbox-marker")
+        );
+        assert_eq!(
+            parameters["lockbox_disbursements"][0]["amount"].as_integer(),
+            Some(0)
         );
     }
 

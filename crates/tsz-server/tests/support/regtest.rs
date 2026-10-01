@@ -281,7 +281,7 @@ struct WalletSyncResponse {
 #[derive(Debug, Deserialize)]
 struct AccountBalance {
     id: u8,
-    orchard_zatoshi: u64,
+    ironwood_zatoshi: u64,
 }
 
 /// Owns an isolated Zakura node, lightwalletd, proxy and `tsz-server` process.
@@ -805,7 +805,7 @@ impl RegtestStack {
                     );
                     let funded = accounts
                         .iter()
-                        .any(|account| account.id == 1 && account.orchard_zatoshi == 500_000_000);
+                        .any(|account| account.id == 1 && account.ironwood_zatoshi == 500_000_000);
                     if health.wallet_sync.state == "ready" && funded {
                         return Ok(());
                     }
@@ -998,6 +998,7 @@ pub enum RecoveryPhase {
     AutoMine,
     DirectMine,
     Recovery,
+    Faucet,
     Cleanup,
 }
 
@@ -1009,6 +1010,7 @@ impl RecoveryPhase {
             Self::AutoMine => "auto-mine",
             Self::DirectMine => "direct-mine",
             Self::Recovery => "recovery",
+            Self::Faucet => "faucet",
             Self::Cleanup => "cleanup",
         }
     }
@@ -1411,6 +1413,8 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
+    #[cfg(target_os = "linux")]
+    use super::synchronous_command_output_with_timeout;
     use super::{
         CleanupResource, CommandExecutor, CommandOutput, DockerInspect, DockerResource,
         FailureRoute, RecoveryFailureReporter, RegtestStack, docker_resource_exists_from_inspect,
